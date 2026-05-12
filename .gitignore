@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+.github_token
+
+# SQLite database
+data/job_agent.db
+*.db
+
+# Generated application outputs
+data/applications/
+
+# Resume — contains PII; managed manually, not committed
+job_agent/data/luke_ganalon_resume.json
+
+# OS
+.DS_Store
+Thumbs.db
