@@ -29,7 +29,7 @@ Never commit `.env`, `.github_token`, `data/job_agent.db`, generated application
 
 ## Feature flags and configuration
 
-There are no feature-flag services to log into or mock. The only runtime switches are CLI flags:
+There are no feature-flag services to log into or mock. Core orchestrator behavior is controlled by `ANTHROPIC_API_KEY`, the resume JSON, and CLI flags:
 
 | Area | Command flags |
 |---|---|
@@ -39,13 +39,15 @@ There are no feature-flag services to log into or mock. The only runtime switche
 
 Do not edit source to fake flags. For API-free checks, test local modules directly or set `ANTHROPIC_API_KEY=dummy` only for import smoke tests that do not call Claude.
 
+`push_github.py` is outside the core orchestrator flow; it separately reads `GITHUB_TOKEN` or `.github_token` only when that script is run.
+
 ## Testing workflows by codebase area
 
 | Area | Fast check | End-to-end check |
 |---|---|---|
 | CLI/orchestrator | `python orchestrator.py --help` | With key + resume, `python orchestrator.py apply --url "<real job URL>"` and verify `data/applications/YYYYMMDD_company_title_slug/{jd.json,tailored_resume.json,cover_letter.md,meta.json}` |
-| Search agent | `python orchestrator.py search --help` | `python orchestrator.py search`; expect Claude discovery, ATS fetches, scoring, and SQLite job rows. If discovery JSON truncates, prefer `apply --url` for E2E validation |
-| Gap planner/builder | `python orchestrator.py gaps --help`; without the gitignored resume JSON, `gaps` fails before DB checks | With resume present and a fresh DB, `python orchestrator.py gaps` should print "No jobs in state store yet"; with jobs present, it may call Claude to backfill missing skill lists before planning |
+| Search agent | `python orchestrator.py search --help` | `python orchestrator.py search`; `agent_metadata.target_roles` must be non-empty or it exits early. Expect Claude discovery, ATS fetches, scoring, and SQLite job rows. If discovery JSON truncates, prefer `apply --url` for E2E validation |
+| Gap planner/builder | `python orchestrator.py gaps --help`; without the gitignored resume JSON, `gaps` fails before DB checks | With resume present, `python orchestrator.py gaps` prints "No jobs in state store yet" when no stored jobs meet `min_score=50`; with jobs present, it may call Claude to backfill missing skill lists before planning |
 | Local tools | Run `python -c "from tools.state_store import StateStore; print(StateStore().summary())"` | Exercise focused snippets for `tools.llm_json.loads_llm_json`, `tools.text_sanitize.strip_code_fences`, and SQLite CRUD; these do not need Claude |
 | JD parser/LLM agents | Import with `ANTHROPIC_API_KEY=dummy python -c "from tools.jd_parser import parse_jd; from agents.resume_agent import ResumeAgent"` | Use `apply --url`; it fetches a real posting, parses it with Claude, runs resume and cover-letter agents, and saves outputs |
 
