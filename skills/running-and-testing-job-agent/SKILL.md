@@ -7,7 +7,7 @@ description: Use when starting work in this job-search pipeline codebase, before
 
 ## Overview
 
-Python CLI — no server, no Docker. Entry point: `job_agent/orchestrator.py`. Three subcommands: `search`, `apply`, `gaps`. All LLM calls use `claude-sonnet-4-5` via `ANTHROPIC_API_KEY`.
+Python CLI — no server, no Docker. Entry point: `job_agent/orchestrator.py`. Four subcommands: `search`, `apply`, `gaps`, `status`. All LLM calls use `claude-sonnet-4-5` via `ANTHROPIC_API_KEY` (the `status` subcommand is fully offline and never calls Claude).
 
 ## Required Setup (Every Cloud Session)
 
@@ -71,15 +71,60 @@ python orchestrator.py apply --url "https://jobs.lever.co/anthropic/SOME-JOB-ID"
 
 ### orchestrator.py — subcommands
 
-```bash
-python orchestrator.py --help          # always safe, no API key required
+| Command | API key required? | What it does |
+|---------|-------------------|--------------|
+| `python orchestrator.py --help` | no | print CLI usage |
+| `python orchestrator.py status` | no | read-only dashboard over `job_agent.db` + `data/applications/` + `data/projects/` |
+| `python orchestrator.py status --format json -o /tmp/status.json` | no | export status as JSON |
+| `python orchestrator.py status --format html -o /tmp/status.html` | no | export status as standalone HTML |
+| `python orchestrator.py search` | yes | discovery + scoring (early-exits after 3 consecutive scores < 50; truncation gotcha still applies) |
+| `python orchestrator.py search --company "Glean" "Cohere"` | yes | append ad-hoc companies |
+| `python orchestrator.py gaps` | yes | gap analysis — requires jobs already in DB |
+| `python orchestrator.py gaps --build` | yes | pass **one** stored project idea to the builder; builder refines any incomplete project first |
 
-python orchestrator.py search          # discovery + scoring (may truncate at max_tokens=2000)
-python orchestrator.py search --company "Glean" "Cohere"  # append ad-hoc companies
+### SearchAgent — early-exit guardrail
 
-python orchestrator.py gaps            # gap analysis — requires jobs already in DB
-python orchestrator.py gaps --build    # gap analysis + auto-scaffold Option 1 project
-```
+The agent scores postings in ordered batches and halts as soon as
+`EARLY_EXIT_CONSECUTIVE_LOW` (default `3`) consecutive postings score
+below `EARLY_EXIT_SCORE_THRESHOLD` (default `50`). When this triggers
+you'll see `⛔ Early exit: …` in stdout and `early_exits = 1` in the
+matching `run_history` row. Tune the constants at the top of
+`agents/search_agent.py` if you need a stricter or looser policy.
+
+### ProjectBuilderAgent — finish-before-starting
+
+Every scaffold writes `meta.json` at the project root: `status:
+"in_progress"` first, then `status: "completed"` once all required
+artifacts exist. On every `build()` call the agent scans
+`data/projects/` and, if any subdirectory has a non-`completed` status,
+refines the most recently modified one (regenerating missing source
+files / README / requirements / MILESTONES) instead of scaffolding the
+new brief. The agent's `last_action` attribute (`"scaffolded"` or
+`"refined"`) is read by the orchestrator to decide what to do with the
+planner idea it passed in.
+
+### ProjectPlannerAgent — pass-one-per-run
+
+`gaps --build` saves every planner-generated option as a row in the new
+`project_ideas` table, then passes exactly one idea to the builder per
+run. The orchestrator prefers the oldest pending idea over a freshly
+generated one, so backlog gets worked off before new options are tried.
+If the builder ends up refining an existing project, the chosen idea is
+returned to `pending` for the next run.
+
+## Decision: Which Test to Run
+
+| You want to verify… | Run this | API key required? |
+|---------------------|----------|-------------------|
+| Pipeline state (jobs scored, apps generated, ideas queued, recent runs, early exits, Claude failures) | `python orchestrator.py status` | no |
+| Status export to share / diff | `python orchestrator.py status --format json -o /tmp/s.json` (or `--format html`) | no |
+| Imports still resolve after a refactor | `python -c "from agents.search_agent import SearchAgent; ..."` (see above) | no |
+| State store schema initializes & summary works | `python tools/state_store.py` | no |
+| `search` end-to-end (discovery + scoring + early-exit) | `python orchestrator.py search` | yes |
+| Search early-exit guardrail fires when scores are weak | `python orchestrator.py search`, then `python orchestrator.py status` and check `early_exits` in the latest run-history row | yes |
+| `apply` end-to-end (JD parse + Resume + Cover Letter) | `python orchestrator.py apply --url "..."` | yes |
+| Gap analysis + planner option storage (no build) | `python orchestrator.py gaps` then check the project-ideas table via `status` | yes |
+| Planner pass-one + builder finish-first interplay | `python orchestrator.py gaps --build` twice in a row: first scaffolds, second should refine the same project until it is marked completed | yes |
 
 ## Common Failure Modes
 
