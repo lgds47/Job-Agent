@@ -17,6 +17,7 @@ import copy
 from anthropic import AsyncAnthropic
 
 from tools.llm_json import loads_llm_json
+from tools.text_sanitize import strip_code_fences
 
 client = AsyncAnthropic()
 
@@ -88,6 +89,9 @@ class ResumeAgent:
             raise RuntimeError("ResumeAgent expected a JSON array of bullet rankings from the model.")
         # Merge relevance scores back onto full bullet objects
         score_map = {r["id"]: r for r in ranked if isinstance(r, dict) and "id" in r}
+        missing = [b["id"] for b in bullets if b["id"] not in score_map]
+        if missing:
+            print(f"  ⚠️  ResumeAgent: model omitted {len(missing)} bullet(s) from ranking — defaulting to relevance=0: {missing}")
         for b in bullets:
             b["relevance"] = score_map.get(b["id"], {}).get("relevance", 0)
             b["relevance_reason"] = score_map.get(b["id"], {}).get("reason", "")
@@ -108,7 +112,7 @@ Keywords: {', '.join(jd.get('keywords', []))}
             system=SUMMARY_REWRITE_SYSTEM,
             messages=[{"role": "user", "content": f"Original summary:\n{original}\n\nTarget JD:\n{jd_text}"}]
         )
-        return response.content[0].text.strip()
+        return strip_code_fences(response.content[0].text)
 
     async def run(self, jd: dict) -> dict:
         """

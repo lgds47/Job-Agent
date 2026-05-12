@@ -145,7 +145,7 @@ async def run_gaps(args):
     print("\n=== PROJECT PLANNER AGENT ===")
     resume = load_resume()
     store = StateStore()
-    recent_jobs = store.get_recent_jobs(n=50)
+    recent_jobs = store.get_recent_jobs(n=50, min_score=50)
 
     if not recent_jobs:
         print("⚠️  No jobs in state store yet. Run `python orchestrator.py search` first.")

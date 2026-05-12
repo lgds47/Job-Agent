@@ -22,6 +22,7 @@ Scoring: Claude rates each JD 0-100 with early-career fit awareness.
 
 import json
 import asyncio
+from datetime import datetime
 import httpx
 from anthropic import AsyncAnthropic
 
@@ -141,7 +142,9 @@ class SearchAgent:
     async def _discover_companies(self, roles: list[str]) -> list[dict]:
         """Ask Claude to research and recommend companies currently hiring."""
         print("  🌐 Discovering companies via Claude research...")
+        today = datetime.now().strftime("%Y-%m-%d")
         prompt = json.dumps({
+            "today": today,
             "target_roles": roles,
             "candidate": json.loads(self.resume_summary)
         }, indent=2)

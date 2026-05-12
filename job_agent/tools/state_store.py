@@ -36,7 +36,7 @@ class StateStore:
 
                 CREATE TABLE IF NOT EXISTS applications (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    job_url     TEXT NOT NULL,
+                    job_url     TEXT NOT NULL UNIQUE,
                     app_dir     TEXT,
                     status      TEXT DEFAULT 'draft',
                     applied_at  TEXT,
@@ -108,6 +108,9 @@ class StateStore:
             conn.execute("""
                 INSERT INTO applications (job_url, app_dir, created_at)
                 VALUES (?, ?, ?)
+                ON CONFLICT(job_url) DO UPDATE SET
+                    app_dir    = excluded.app_dir,
+                    created_at = excluded.created_at
             """, (job_url, app_dir, now))
 
     def update_application_status(self, job_url: str, status: str, notes: str = None):
