@@ -25,7 +25,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 # or create /workspace/job_agent/.env containing ANTHROPIC_API_KEY=...
 ```
 
-Never commit `.env`, `.github_token`, `*.db`, generated applications, or `data/luke_ganalon_resume.json`; they contain secrets, state, or PII. The resume and DB are ignored, but `job_agent/data/applications/` may still appear in `git status`, so remove or leave it unstaged unless the user explicitly asks to keep outputs. Full LLM runs also require a user-supplied `data/luke_ganalon_resume.json` with `contact`, `summary.text`, `agent_metadata.target_roles`, `skills`, `experience[].bullets[].id`, `education`, and `certifications`.
+Never commit `.env`, `.github_token`, `*.db`, generated applications/projects, or `data/luke_ganalon_resume.json`; they contain secrets, state, or PII. The resume and DB are ignored, but `job_agent/data/applications/` and `job_agent/data/projects/` may still appear in `git status`, so remove or leave them unstaged unless the user explicitly asks to keep outputs. Full LLM runs also require a user-supplied `data/luke_ganalon_resume.json` with `contact`, `summary.text`, `agent_metadata.target_roles`, `skills`, `experience[].bullets[].id`, `education`, and `certifications`.
 
 ## Feature flags and configuration
 
@@ -58,7 +58,7 @@ Do not edit source to fake flags. For API-free checks, test local modules direct
 3. Confirm `ANTHROPIC_API_KEY` and `data/luke_ganalon_resume.json` exist before testing LLM flows or `gaps`.
 4. Prefer `apply --url` for reliable full-pipeline testing, but expect real job URLs to fail when a board blocks HTTP fetches, returns thin HTML, or rate-limits.
 5. Treat `search` as fragile: discovery can fail from model JSON truncation, and `search --company` still performs discovery first.
-6. Treat generated `data/` outputs as test artifacts unless the user asks to preserve them.
+6. Treat generated `data/applications/` and `data/projects/` outputs as test artifacts unless the user asks to preserve them.
 
 ## Updating this skill
 
