@@ -25,7 +25,13 @@ python orchestrator.py gaps --build    # gap analysis + project scaffold
 
 ### Resume JSON
 
-A structured resume file at `job_agent/data/luke_ganalon_resume.json` is required. It is gitignored (contains PII). For testing, create a minimal JSON with keys: `contact` (`name`, `title`), `agent_metadata` (`target_roles` list), `skills` (dict of category → `{label, items}`), `experience` (list with `bullets` containing `text`), `education` (list with `degree`, `field`), `certifications` (list with `name`).
+A structured resume file at `job_agent/data/luke_ganalon_resume.json` is required. It is gitignored (contains PII). The full schema must include: `contact` (`name`, `title`), `summary` (`text` — required by both ResumeAgent and CoverLetterAgent), `agent_metadata` (`target_roles` list), `skills` (dict of category → `{label, items}`), `experience` (list with `bullets` containing `id`, `text`, `skills`), `education` (list with `institution`, `degree`, `field`), `certifications` (list with `name`). Bullets must have unique `id` fields (e.g. `b_001_1`) for the ResumeAgent bullet ranking to work.
+
+### Gotchas
+
+- The `search` command's discovery step requests 15-20 companies but the LLM max_tokens is 2000, which can cause JSON truncation. If discovery fails, use `apply --url` instead for reliable end-to-end testing.
+- The `apply` command is the best end-to-end test: it exercises the JD parser (real HTTP fetch), ResumeAgent (bullet ranking + summary rewrite), and CoverLetterAgent (generation) in parallel, with no discovery dependency.
+- `search --company` still runs the full discovery step first; ad-hoc companies are merged after discovery succeeds.
 
 ### Local components that work without API key
 
