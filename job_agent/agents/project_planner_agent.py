@@ -313,7 +313,7 @@ Candidate's existing stack: {json.dumps(self.candidate_skills)}
 
         Returns a ProjectBrief dict.
         """
-        print(f"\n  📋 Building brief for: {option['title']}...")
+        print(f"\n  📋 Building brief for: {option.get('title', '—')}...")
 
         prompt = f"""Skill to demonstrate: {gap['skill']}
 Chosen option:
@@ -336,11 +336,13 @@ Candidate's existing skills (use as building blocks):
             raise RuntimeError("ProjectPlannerAgent build_brief: model did not return a JSON object.")
 
         # Print summary
-        print(f"\n  ✅ Brief ready: {brief['title']}")
-        print(f"     Goal: {brief['goal']}")
-        print(f"     Stack: {', '.join(brief['stack']['core'])}")
-        print(f"     Milestones: {len(brief['milestones'])} weeks")
-        print(f"     Estimated: ~{brief['estimated_hours']}h")
+        core_stack = (brief.get("stack") or {}).get("core") or []
+        milestones = brief.get("milestones") or []
+        print(f"\n  ✅ Brief ready: {brief.get('title', '—')}")
+        print(f"     Goal: {brief.get('goal', '—')}")
+        print(f"     Stack: {', '.join(core_stack) if core_stack else '—'}")
+        print(f"     Milestones: {len(milestones)} weeks")
+        print(f"     Estimated: ~{brief.get('estimated_hours', '?')}h")
         print(f"\n  → Pass this brief to ProjectBuilderAgent to scaffold the repo\n")
 
         return brief

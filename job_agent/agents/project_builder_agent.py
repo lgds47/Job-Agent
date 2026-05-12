@@ -246,8 +246,9 @@ Key components: {json.dumps(brief['architecture']['key_components'])}
         print(f"     pip install -r requirements.txt")
         print(f"     # Download dataset: {brief['dataset'].get('download_instructions', 'see README')}")
         print(f"     python src/train.py\n")
-        print(f"  📅 Week 1 goal: {brief['milestones'][0]['goal']}")
-        print(f"  📅 Week 1 deliverable: {brief['milestones'][0]['deliverable']}\n")
+        if brief.get("milestones"):
+            print(f"  📅 Week 1 goal: {brief['milestones'][0].get('goal', '—')}")
+            print(f"  📅 Week 1 deliverable: {brief['milestones'][0].get('deliverable', '—')}\n")
         print(f"  📝 Resume bullet (after completion):")
         print(f"     {brief['resume_bullet']}\n")
         print(f"  Track progress in MILESTONES.md\n")

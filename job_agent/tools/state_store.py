@@ -63,6 +63,8 @@ class StateStore:
         now = datetime.now().isoformat()
         with self._conn() as conn:
             for job in jobs:
+                if not job.get("url"):
+                    continue
                 conn.execute("""
                     INSERT INTO jobs (url, title, company, location, score, raw_json, discovered_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
