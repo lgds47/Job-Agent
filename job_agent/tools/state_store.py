@@ -314,6 +314,32 @@ class StateStore:
             picked["gap"] = self._loads_json_safe(picked.get("gap_json")) or {}
             return picked
 
+    def peek_next_project_idea(self) -> dict | None:
+        """Preview the next idea without mutating selection counters."""
+        with self._conn() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("""
+                SELECT *
+                FROM project_ideas
+                WHERE status != 'completed'
+                ORDER BY
+                    CASE status
+                        WHEN 'not_started' THEN 0
+                        WHEN 'in_progress' THEN 1
+                        ELSE 2
+                    END,
+                    COALESCE(last_selected_at, created_at) ASC,
+                    created_at ASC,
+                    id ASC
+                LIMIT 1
+            """).fetchone()
+            if not row:
+                return None
+            preview = dict(row)
+            preview["option"] = self._loads_json_safe(preview.get("option_json")) or {}
+            preview["gap"] = self._loads_json_safe(preview.get("gap_json")) or {}
+            return preview
+
     def update_project_idea_status(self, idea_key: str, status: str, project_dir: str | None = None):
         now = datetime.now().isoformat()
         with self._conn() as conn:

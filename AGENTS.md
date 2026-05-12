@@ -4,7 +4,7 @@
 
 ### Overview
 
-Python CLI application — a multi-agent job search pipeline built on the Anthropic Claude API. No web server, no Docker, no frontend. Entry point is `job_agent/orchestrator.py` with subcommands: `search`, `apply`, `gaps`.
+Python CLI application — a multi-agent job search pipeline built on the Anthropic Claude API. No web server, no Docker, no frontend. Entry point is `job_agent/orchestrator.py` with subcommands: `search`, `apply`, `gaps`, `status`.
 
 ### Running the app
 
@@ -17,6 +17,7 @@ python orchestrator.py search          # discover + score jobs
 python orchestrator.py apply --url URL # generate application package
 python orchestrator.py gaps            # skill gap analysis
 python orchestrator.py gaps --build    # gap analysis + project scaffold
+python orchestrator.py status          # read-only output/performance dashboard
 ```
 
 ### Key environment requirement

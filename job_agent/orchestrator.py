@@ -103,6 +103,23 @@ def _project_completion_state(project_dir: str | None) -> str:
     return "in_progress"
 
 
+def _is_project_complete_dir(project_dir: Path) -> bool:
+    if (project_dir / "completed.json").exists():
+        return True
+    meta = _safe_load_json(project_dir / "meta.json")
+    return str(meta.get("status", "")).lower() == "completed"
+
+
+def _most_recent_incomplete_project(projects_dir: Path) -> Path | None:
+    if not projects_dir.exists():
+        return None
+    dirs = [p for p in projects_dir.iterdir() if p.is_dir()]
+    incomplete = [p for p in dirs if not _is_project_complete_dir(p)]
+    if not incomplete:
+        return None
+    return sorted(incomplete, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+
+
 def _collect_application_outputs(store: StateStore) -> list[dict]:
     db_apps = {str(app.get("app_dir")): app for app in store.get_applications()}
     outputs = []
@@ -372,12 +389,22 @@ async def run_search(args):
         print(f"\n✅ Saved {len(results)} jobs to state store.")
 
     stats = agent.last_run_stats or {}
+    claude_failures = int(stats.get("claude_failures") or agent.claude_failures or 0)
+    if results:
+        run_status = "success" if claude_failures == 0 else "degraded"
+    elif claude_failures > 0 and int(stats.get("jobs_scored") or 0) == 0:
+        run_status = "failed"
+    elif claude_failures > 0:
+        run_status = "degraded"
+    else:
+        run_status = "empty"
+
     store.record_run(
         command="search",
-        status="success" if results else "empty",
+        status=run_status,
         jobs_scored=int(stats.get("jobs_scored") or 0),
         early_exit_triggered=bool(stats.get("early_exit_triggered")),
-        claude_failures=int(stats.get("claude_failures") or agent.claude_failures or 0),
+        claude_failures=claude_failures,
         metadata={
             **stats,
             "qualified_returned": len(results),
@@ -519,6 +546,11 @@ async def run_gaps(args):
 
     if not raw_gaps:
         print("✅ No significant skill gaps detected in recent postings.")
+        store.record_run(
+            command="gaps",
+            status="success",
+            metadata={"reason": "no_significant_gaps"}
+        )
         return
 
     # Step 2: Planner analyzes and triages
@@ -593,18 +625,43 @@ async def run_gaps(args):
         )
         return
 
-    selected_idea = planner.pick_idea_for_builder()
+    selected_idea = None
     selected_option = options[0]
     selected_gap = top_gap
-    if selected_idea:
-        selected_option = selected_idea.get("option") or selected_option
-        selected_gap = selected_idea.get("gap") or selected_gap
-        print("\n  🎯 Builder handoff (one idea only):")
-        print(f"     idea_key: {selected_idea.get('idea_key')}")
-        print(f"     title: {selected_idea.get('title')}")
-        print(f"     status: {selected_idea.get('status')}")
 
     if args.build:
+        # Finish-first override: if an incomplete project exists, keep refining it.
+        existing_incomplete = _most_recent_incomplete_project(PROJECTS_DIR)
+        if existing_incomplete:
+            meta = _safe_load_json(existing_incomplete / "meta.json")
+            existing_key = meta.get("idea_key")
+            if existing_key:
+                for idea in store.get_project_ideas(include_completed=True):
+                    if idea.get("idea_key") == existing_key:
+                        selected_idea = idea
+                        break
+            if selected_idea is None:
+                selected_idea = {
+                    "idea_key": existing_key,
+                    "title": meta.get("title") or existing_incomplete.name,
+                    "status": "in_progress",
+                    "option": selected_option,
+                    "gap": selected_gap,
+                }
+            selected_option = selected_idea.get("option") or selected_option
+            selected_gap = selected_idea.get("gap") or selected_gap
+        else:
+            selected_idea = planner.pick_idea_for_builder()
+            if selected_idea:
+                selected_option = selected_idea.get("option") or selected_option
+                selected_gap = selected_idea.get("gap") or selected_gap
+
+        if selected_idea:
+            print("\n  🎯 Builder handoff (one idea only):")
+            print(f"     idea_key: {selected_idea.get('idea_key')}")
+            print(f"     title: {selected_idea.get('title')}")
+            print(f"     status: {selected_idea.get('status')}")
+
         print("\n  🏗️  --build flag set, proceeding with Option 1...")
         try:
             brief = await planner.build_brief(option=selected_option, gap=selected_gap)
@@ -637,13 +694,19 @@ async def run_gaps(args):
             metadata={
                 "analyzed_gaps": len(analyzed_gaps),
                 "project_gaps": len(project_gaps),
-                "selected_idea_key": (selected_idea or {}).get("idea_key"),
+                "selected_idea_key": active_idea_key or (selected_idea or {}).get("idea_key"),
                 "builder_mode": builder.last_build_info.get("mode"),
                 "project_dir": str(project_dir),
                 "build": True,
             }
         )
     else:
+        selected_idea = planner.peek_idea_for_builder()
+        if selected_idea:
+            print("\n  🎯 Next builder handoff preview (no queue mutation):")
+            print(f"     idea_key: {selected_idea.get('idea_key')}")
+            print(f"     title: {selected_idea.get('title')}")
+            print(f"     status: {selected_idea.get('status')}")
         print("  💡 Run with --build to auto-scaffold Option 1,")
         print("     or call planner/builder manually for full control.\n")
         store.record_run(

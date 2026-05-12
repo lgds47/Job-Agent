@@ -380,3 +380,9 @@ Candidate's existing skills (use as building blocks):
         if self.store is None:
             return None
         return self.store.pick_next_project_idea()
+
+    def peek_idea_for_builder(self) -> dict | None:
+        """Preview the next builder idea without mutating queue state."""
+        if self.store is None:
+            return None
+        return self.store.peek_next_project_idea()

@@ -386,11 +386,17 @@ Description:
             scoring = loads_llm_json(response.content[0].text)
             if not isinstance(scoring, dict):
                 raise ValueError("scoring payload is not a JSON object")
-            return {**job, **scoring}
+            return {**job, **scoring, "scoring_failed": False}
         except Exception as e:
             self._record_claude_failure()
             print(f"    ⚠️  Scoring failed ({title}): {e}")
-            return {**job, "score": 0, "match_reasons": [], "gap_reasons": []}
+            return {
+                **job,
+                "score": 0,
+                "match_reasons": [],
+                "gap_reasons": [],
+                "scoring_failed": True
+            }
 
     # ── Main Entry ────────────────────────────────────────────────────────────
 
@@ -475,8 +481,14 @@ Description:
             scored.append(scored_job)
             self.last_run_stats["jobs_scored"] += 1
             score = float(scored_job.get("score") or 0)
+            scoring_failed = bool(scored_job.get("scoring_failed"))
 
-            if score < LOW_SCORE_THRESHOLD:
+            if scoring_failed:
+                print(
+                    "    ↳ Scoring failure encountered; excluded from low-signal streak "
+                    "calculation."
+                )
+            elif score < LOW_SCORE_THRESHOLD:
                 consecutive_low += 1
                 print(
                     f"    ↳ Low score streak: {consecutive_low}/{CONSECUTIVE_LOW_SCORE_LIMIT} "
