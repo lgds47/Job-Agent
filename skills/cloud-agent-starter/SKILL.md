@@ -49,7 +49,7 @@ description: Use when starting work in this repository on Cursor Cloud and you n
 ### D. Local state + utility tools (`tools/state_store.py`, `tools/llm_json.py`, `tools/text_sanitize.py`)
 
 - Local-only verification (no API key needed):  
-  `python -c "from tools.state_store import StateStore; from tools.llm_json import loads_llm_json; from tools.text_sanitize import strip_code_fences; print(StateStore().summary()); print(loads_llm_json('{\"x\":1}')); print(strip_code_fences('```json\\n{}\\n```'))"`
+  `python -c "from tools.state_store import StateStore; from tools.llm_json import loads_llm_json; from tools.text_sanitize import strip_code_fences; fenced = chr(96)*3 + 'json\\n{}\\n' + chr(96)*3; print(StateStore().summary()); print(loads_llm_json('{\\\"x\\\":1}')); print(strip_code_fences(fenced))"`
 
 ## 4) Updating this skill when new runbook knowledge appears
 
