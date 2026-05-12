@@ -39,6 +39,7 @@ import json
 from anthropic import AsyncAnthropic
 
 from tools.llm_json import loads_llm_json
+from tools.state_store import StateStore
 
 client = AsyncAnthropic()
 
@@ -170,9 +171,14 @@ Return ONLY a JSON object, no markdown fences:
 
 
 class ProjectPlannerAgent:
-    def __init__(self, resume: dict):
+    def __init__(self, resume: dict, store: StateStore | None = None):
         self.resume = resume
+        self.store = store
         self.candidate_skills = self._extract_skills()
+        self.claude_failures = 0
+
+    def _record_claude_failure(self):
+        self.claude_failures += 1
 
     def _extract_skills(self) -> list[str]:
         return [
@@ -200,16 +206,21 @@ class ProjectPlannerAgent:
 Skill gaps from job postings:
 {json.dumps(gaps, indent=2)}
 """
-        response = await client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=2000,
-            system=GAP_TRIAGE_SYSTEM,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        try:
+            response = await client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=2000,
+                system=GAP_TRIAGE_SYSTEM,
+                messages=[{"role": "user", "content": prompt}]
+            )
+        except Exception as e:
+            self._record_claude_failure()
+            raise RuntimeError(f"ProjectPlannerAgent analyze call failed: {e}") from e
 
         try:
             result = loads_llm_json(response.content[0].text)
         except ValueError as e:
+            self._record_claude_failure()
             raise RuntimeError(f"ProjectPlannerAgent analyze failed: {e}") from e
         if not isinstance(result, dict) or "gaps" not in result or "reasoning" not in result:
             raise RuntimeError("ProjectPlannerAgent analyze: model JSON missing required keys.")
@@ -260,18 +271,27 @@ Gap level: {gap['gap_level']}
 Candidate head start: {gap.get('candidate_head_start', 'none noted')}
 Candidate's existing stack: {json.dumps(self.candidate_skills)}
 """
-        response = await client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=2000,
-            system=OPTIONS_SYSTEM,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        try:
+            response = await client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=2000,
+                system=OPTIONS_SYSTEM,
+                messages=[{"role": "user", "content": prompt}]
+            )
+        except Exception as e:
+            self._record_claude_failure()
+            raise RuntimeError(f"ProjectPlannerAgent generate_options call failed: {e}") from e
         try:
             options = loads_llm_json(response.content[0].text)
         except ValueError as e:
+            self._record_claude_failure()
             raise RuntimeError(f"ProjectPlannerAgent generate_options failed: {e}") from e
         if not isinstance(options, list) or not options:
             raise RuntimeError("ProjectPlannerAgent generate_options: expected a non-empty JSON array.")
+
+        if self.store is not None:
+            saved = self.store.save_project_ideas(gap=gap, options=options, run_source="gaps")
+            print(f"\n  💾 Persisted {saved} project idea(s) for future runs.")
 
         # Print options with tradeoffs
         for i, opt in enumerate(options, 1):
@@ -322,15 +342,20 @@ Chosen option:
 Candidate's existing skills (use as building blocks):
 {json.dumps(self.candidate_skills)}
 """
-        response = await client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=2000,
-            system=BRIEF_SYSTEM,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        try:
+            response = await client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=2000,
+                system=BRIEF_SYSTEM,
+                messages=[{"role": "user", "content": prompt}]
+            )
+        except Exception as e:
+            self._record_claude_failure()
+            raise RuntimeError(f"ProjectPlannerAgent build_brief call failed: {e}") from e
         try:
             brief = loads_llm_json(response.content[0].text)
         except ValueError as e:
+            self._record_claude_failure()
             raise RuntimeError(f"ProjectPlannerAgent build_brief failed: {e}") from e
         if not isinstance(brief, dict):
             raise RuntimeError("ProjectPlannerAgent build_brief: model did not return a JSON object.")
@@ -346,3 +371,12 @@ Candidate's existing skills (use as building blocks):
         print(f"\n  → Pass this brief to ProjectBuilderAgent to scaffold the repo\n")
 
         return brief
+
+    def pick_idea_for_builder(self) -> dict | None:
+        """
+        Return exactly one persisted idea for the next builder handoff.
+        Preference: ideas not yet started.
+        """
+        if self.store is None:
+            return None
+        return self.store.pick_next_project_idea()

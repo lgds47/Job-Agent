@@ -7,7 +7,9 @@ description: Use when starting work in this job-search pipeline codebase, before
 
 ## Overview
 
-Python CLI — no server, no Docker. Entry point: `job_agent/orchestrator.py`. Three subcommands: `search`, `apply`, `gaps`. All LLM calls use `claude-sonnet-4-5` via `ANTHROPIC_API_KEY`.
+Python CLI — no server, no Docker. Entry point: `job_agent/orchestrator.py`.
+Subcommands: `search`, `apply`, `gaps`, `status`.
+All LLM calls use `claude-sonnet-4-5` via `ANTHROPIC_API_KEY`.
 
 ## Required Setup (Every Cloud Session)
 
@@ -61,6 +63,27 @@ python -c "from agents.project_planner_agent import ProjectPlannerAgent; print('
 python -c "from agents.project_builder_agent import ProjectBuilderAgent; print('OK')"
 ```
 
+### SearchAgent
+
+- Search now has an early-exit quality guardrail during scoring.
+- Defaults in `agents/search_agent.py`:
+  - `LOW_SCORE_THRESHOLD = 50`
+  - `CONSECUTIVE_LOW_SCORE_LIMIT = 3`
+- Behavior: if 3 consecutive scored jobs are below 50, SearchAgent logs a warning and halts scoring for that run.
+- This is intentional resource control (stop when signal quality degrades).
+
+### ProjectPlannerAgent
+
+- Planner still generates and persists the full option list for a selected gap.
+- Builder handoff is one idea per run only.
+- Selection preference is not-started ideas first, then in-progress backlog.
+
+### ProjectBuilderAgent
+
+- Builder now checks `data/projects/` before scaffolding.
+- If unfinished projects exist (no `completed.json` and no `meta.json` status `completed`), it picks the most recent incomplete project and refines it.
+- New project scaffolding is allowed only when no incomplete project exists.
+
 **End-to-end test** (`apply` is the most reliable — no discovery step, no truncation risk):
 
 ```bash
@@ -71,15 +94,27 @@ python orchestrator.py apply --url "https://jobs.lever.co/anthropic/SOME-JOB-ID"
 
 ### orchestrator.py — subcommands
 
-```bash
-python orchestrator.py --help          # always safe, no API key required
+| Command | What it does | API key required |
+|---|---|---|
+| `python orchestrator.py --help` | CLI help output | No |
+| `python orchestrator.py search` | Discovery + scoring (with low-signal early-exit guardrail) | Yes |
+| `python orchestrator.py search --company "Glean" "Cohere"` | Adds ad-hoc companies after discovery | Yes |
+| `python orchestrator.py apply --url "<job-url>"` | JD parse + tailored resume + cover letter package | Yes |
+| `python orchestrator.py gaps` | Gap analysis + planner option persistence + one-at-a-time idea selection | Yes |
+| `python orchestrator.py gaps --build` | Gap analysis + one selected idea sent to builder | Yes |
+| `python orchestrator.py status` | Read-only dashboard of jobs, outputs, ideas, run history | No |
+| `python orchestrator.py status --format json` | Same dashboard as structured JSON | No |
+| `python orchestrator.py status --format html` | Same dashboard as HTML table output | No |
 
-python orchestrator.py search          # discovery + scoring (may truncate at max_tokens=2000)
-python orchestrator.py search --company "Glean" "Cohere"  # append ad-hoc companies
+## Decision: Which Test to Run
 
-python orchestrator.py gaps            # gap analysis — requires jobs already in DB
-python orchestrator.py gaps --build    # gap analysis + auto-scaffold Option 1 project
-```
+| If you changed... | Run this first | Why |
+|---|---|---|
+| `tools/state_store.py` or formatting code | `python tools/state_store.py` | Validates DB init + summary path still works |
+| SearchAgent logic | `python orchestrator.py search` | Verifies discovery/scoring flow and early-exit behavior |
+| Planner/Builder handoff logic | `python orchestrator.py gaps` then `python orchestrator.py gaps --build` | Confirms idea persistence + pass-one + finish-first builder behavior |
+| Application pipeline | `python orchestrator.py apply --url "<url>"` | Best end-to-end exercise for JD parser + resume + cover letter |
+| New status command | `python orchestrator.py status --format text` and `--format json` | Verifies readability + structured export |
 
 ## Common Failure Modes
 
@@ -91,6 +126,8 @@ python orchestrator.py gaps --build    # gap analysis + auto-scaffold Option 1 p
 | `ResumeAgent bullet ranking failed` | Bullet `id` fields missing or duplicated | Fix `id` fields in resume JSON |
 | `No jobs in state store yet` on `gaps` | `search` hasn't run yet | Run `search` first or seed DB manually |
 | `⚠️ No target_roles set` on `search` | Missing `agent_metadata.target_roles` in resume JSON | Add role list to resume JSON |
+| Search stops after several low scores | Early-exit guardrail triggered (`<50` score streak) | Expected; inspect scored jobs via `python orchestrator.py status` |
+| `gaps --build` updates an old project instead of creating a new one | Builder finish-first behavior found an incomplete project | Complete/archive the existing project or add `completed.json` |
 
 ## Mocking
 

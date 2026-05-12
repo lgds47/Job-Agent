@@ -17,6 +17,9 @@ Usage:
 
   # Run skill gap analysis (and optional project scaffold)
   python orchestrator.py gaps
+
+  # View pipeline outputs and performance summary
+  python orchestrator.py status [--format text|json|html]
 """
 
 try:
@@ -31,6 +34,7 @@ import json
 import asyncio
 from pathlib import Path
 from datetime import datetime
+from html import escape
 
 from agents.search_agent import SearchAgent
 from agents.resume_agent import ResumeAgent
@@ -43,6 +47,7 @@ from tools.state_store import StateStore
 
 RESUME_PATH = Path("data/luke_ganalon_resume.json")
 APPLICATIONS_DIR = Path("data/applications")
+PROJECTS_DIR = Path("data/projects")
 LOG_DIR = Path("logs")
 
 
@@ -51,49 +56,355 @@ def load_resume() -> dict:
         return json.load(f)
 
 
+def _safe_load_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _truncate(text: str, width: int) -> str:
+    if text is None:
+        return ""
+    text = str(text)
+    return text if len(text) <= width else f"{text[:max(0, width - 1)]}…"
+
+
+def _format_table(headers: list[str], rows: list[list[str]]) -> str:
+    if not rows:
+        return "(none)"
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for idx, cell in enumerate(row):
+            widths[idx] = max(widths[idx], len(str(cell)))
+    header_line = " | ".join(h.ljust(widths[i]) for i, h in enumerate(headers))
+    sep_line = "-+-".join("-" * widths[i] for i in range(len(headers)))
+    body_lines = [
+        " | ".join(str(cell).ljust(widths[i]) for i, cell in enumerate(row))
+        for row in rows
+    ]
+    return "\n".join([header_line, sep_line, *body_lines])
+
+
+def _project_completion_state(project_dir: str | None) -> str:
+    if not project_dir:
+        return "not_started"
+    path = Path(project_dir)
+    if not path.exists():
+        return "missing_dir"
+    completed_path = path / "completed.json"
+    if completed_path.exists():
+        return "completed"
+    meta = _safe_load_json(path / "meta.json")
+    if str(meta.get("status", "")).lower() == "completed":
+        return "completed"
+    return "in_progress"
+
+
+def _collect_application_outputs(store: StateStore) -> list[dict]:
+    db_apps = {str(app.get("app_dir")): app for app in store.get_applications()}
+    outputs = []
+    if not APPLICATIONS_DIR.exists():
+        return outputs
+
+    dirs = sorted([p for p in APPLICATIONS_DIR.iterdir() if p.is_dir()], reverse=True)
+    for app_dir in dirs:
+        meta = _safe_load_json(app_dir / "meta.json")
+        jd = _safe_load_json(app_dir / "jd.json")
+        db_row = db_apps.get(str(app_dir))
+        outputs.append({
+            "app_dir": str(app_dir),
+            "company": jd.get("company") or meta.get("company") or "unknown",
+            "role": jd.get("title") or meta.get("role") or "unknown",
+            "resume_exists": (app_dir / "tailored_resume.json").exists(),
+            "cover_letter_exists": (app_dir / "cover_letter.md").exists(),
+            "jd_exists": (app_dir / "jd.json").exists(),
+            "status": (db_row or {}).get("status") or meta.get("status") or "unknown",
+            "created_at": (db_row or {}).get("created_at") or meta.get("created_at"),
+            "url": (db_row or {}).get("job_url") or meta.get("url"),
+        })
+    return outputs
+
+
+def collect_status_snapshot() -> dict:
+    store = StateStore()
+    jobs = store.get_all_jobs()
+    applications = _collect_application_outputs(store)
+    ideas = store.get_project_ideas(include_completed=True)
+    run_history = store.get_run_history(limit=200)
+    run_summary = store.get_run_history_summary()
+
+    for idea in ideas:
+        idea["completion_state"] = _project_completion_state(idea.get("project_dir"))
+
+    return {
+        "generated_at": datetime.now().isoformat(),
+        "jobs": jobs,
+        "applications": applications,
+        "project_ideas": ideas,
+        "run_history": run_history,
+        "run_history_summary": run_summary,
+    }
+
+
+def render_status_text(snapshot: dict) -> str:
+    sections = [f"\n=== JOB AGENT STATUS ({snapshot['generated_at']}) ==="]
+
+    jobs_rows = []
+    for job in snapshot["jobs"]:
+        metadata = job.get("metadata") or {}
+        jobs_rows.append([
+            _truncate(job.get("discovered_at", ""), 19),
+            f"{float(job.get('score') or 0):.0f}",
+            _truncate(job.get("company", ""), 20),
+            _truncate(job.get("title", ""), 34),
+            _truncate(job.get("status", ""), 10),
+            _truncate(metadata.get("source", ""), 10),
+            str(len(metadata.get("required_skills", []) or [])),
+            _truncate(job.get("url", ""), 42),
+        ])
+    sections.append("\n[Jobs]")
+    sections.append(_format_table(
+        ["discovered_at", "score", "company", "title", "status", "source", "req#", "url"],
+        jobs_rows
+    ))
+
+    app_rows = []
+    for app in snapshot["applications"]:
+        app_rows.append([
+            _truncate(app.get("created_at", ""), 19),
+            _truncate(app.get("company", ""), 20),
+            _truncate(app.get("role", ""), 32),
+            "Y" if app.get("resume_exists") else "N",
+            "Y" if app.get("cover_letter_exists") else "N",
+            "Y" if app.get("jd_exists") else "N",
+            _truncate(app.get("status", ""), 12),
+            _truncate(app.get("app_dir", ""), 42),
+        ])
+    sections.append("\n[Application Artifacts]")
+    sections.append(_format_table(
+        ["created_at", "company", "role", "resume", "cover", "jd", "status", "dir"],
+        app_rows
+    ))
+
+    idea_rows = []
+    for idea in snapshot["project_ideas"]:
+        idea_rows.append([
+            idea.get("idea_key", ""),
+            _truncate((idea.get("gap") or {}).get("skill", idea.get("skill", "")), 20),
+            _truncate(idea.get("title", ""), 34),
+            _truncate(idea.get("status", ""), 12),
+            _truncate(idea.get("completion_state", ""), 12),
+            str(int(idea.get("selected_count") or 0)),
+            _truncate(idea.get("project_dir", ""), 42),
+        ])
+    sections.append("\n[Project Ideas]")
+    sections.append(_format_table(
+        ["idea_key", "skill", "title", "state", "completion", "selected", "project_dir"],
+        idea_rows
+    ))
+
+    run_rows = []
+    for row in snapshot["run_history"]:
+        run_rows.append([
+            _truncate(row.get("finished_at", ""), 19),
+            _truncate(row.get("command", ""), 8),
+            _truncate(row.get("status", ""), 10),
+            str(int(row.get("jobs_scored") or 0)),
+            str(int(row.get("early_exit_triggered") or 0)),
+            str(int(row.get("claude_failures") or 0)),
+        ])
+    sections.append("\n[Run History — Recent]")
+    sections.append(_format_table(
+        ["finished_at", "command", "status", "jobs_scored", "early_exits", "claude_failures"],
+        run_rows
+    ))
+
+    summary_rows = []
+    for row in snapshot["run_history_summary"]:
+        summary_rows.append([
+            row.get("command", ""),
+            str(int(row.get("runs") or 0)),
+            str(int(row.get("jobs_scored") or 0)),
+            str(int(row.get("early_exits") or 0)),
+            str(int(row.get("claude_failures") or 0)),
+        ])
+    sections.append("\n[Run History — Summary]")
+    sections.append(_format_table(
+        ["command", "runs", "jobs_scored", "early_exits", "claude_failures"],
+        summary_rows
+    ))
+
+    return "\n".join(sections) + "\n"
+
+
+def _render_html_table(headers: list[str], rows: list[list[str]]) -> str:
+    header_html = "".join(f"<th>{escape(str(h))}</th>" for h in headers)
+    row_html = ""
+    for row in rows:
+        row_html += "<tr>" + "".join(f"<td>{escape(str(cell))}</td>" for cell in row) + "</tr>"
+    return f"<table border='1' cellspacing='0' cellpadding='4'><thead><tr>{header_html}</tr></thead><tbody>{row_html}</tbody></table>"
+
+
+def render_status_html(snapshot: dict) -> str:
+    jobs_rows = [
+        [
+            job.get("discovered_at", ""),
+            f"{float(job.get('score') or 0):.0f}",
+            job.get("company", ""),
+            job.get("title", ""),
+            job.get("status", ""),
+            (job.get("metadata") or {}).get("source", ""),
+            len((job.get("metadata") or {}).get("required_skills", []) or []),
+            job.get("url", ""),
+        ]
+        for job in snapshot["jobs"]
+    ]
+    app_rows = [
+        [
+            app.get("created_at", ""),
+            app.get("company", ""),
+            app.get("role", ""),
+            app.get("resume_exists"),
+            app.get("cover_letter_exists"),
+            app.get("jd_exists"),
+            app.get("status", ""),
+            app.get("app_dir", ""),
+        ]
+        for app in snapshot["applications"]
+    ]
+    idea_rows = [
+        [
+            idea.get("idea_key", ""),
+            (idea.get("gap") or {}).get("skill", idea.get("skill", "")),
+            idea.get("title", ""),
+            idea.get("status", ""),
+            idea.get("completion_state", ""),
+            idea.get("selected_count", 0),
+            idea.get("project_dir", ""),
+        ]
+        for idea in snapshot["project_ideas"]
+    ]
+    run_rows = [
+        [
+            row.get("finished_at", ""),
+            row.get("command", ""),
+            row.get("status", ""),
+            row.get("jobs_scored", 0),
+            row.get("early_exit_triggered", 0),
+            row.get("claude_failures", 0),
+        ]
+        for row in snapshot["run_history"]
+    ]
+
+    return (
+        "<html><body>"
+        f"<h1>Job Agent Status</h1><p>Generated at: {escape(snapshot['generated_at'])}</p>"
+        f"<h2>Jobs</h2>{_render_html_table(['discovered_at', 'score', 'company', 'title', 'status', 'source', 'required_skills', 'url'], jobs_rows)}"
+        f"<h2>Application Artifacts</h2>{_render_html_table(['created_at', 'company', 'role', 'resume', 'cover_letter', 'jd', 'status', 'dir'], app_rows)}"
+        f"<h2>Project Ideas</h2>{_render_html_table(['idea_key', 'skill', 'title', 'state', 'completion', 'selected', 'project_dir'], idea_rows)}"
+        f"<h2>Run History</h2>{_render_html_table(['finished_at', 'command', 'status', 'jobs_scored', 'early_exits', 'claude_failures'], run_rows)}"
+        "</body></html>"
+    )
+
+
+def run_status(args):
+    snapshot = collect_status_snapshot()
+    if args.format == "json":
+        print(json.dumps(snapshot, indent=2))
+        return
+    if args.format == "html":
+        print(render_status_html(snapshot))
+        return
+    print(render_status_text(snapshot))
+
+
 async def run_search(args):
     """Discover and score new job postings."""
     print("\n=== JOB SEARCH AGENT ===")
+    store = StateStore()
     resume = load_resume()
     target_roles = resume["agent_metadata"].get("target_roles", [])
 
     if not target_roles:
         print("⚠️  No target_roles set in resume JSON agent_metadata. Add them first.")
         print('   Example: ["ML Engineer", "MLOps Engineer", "Senior Data Scientist"]')
+        store.record_run(
+            command="search",
+            status="skipped",
+            metadata={"reason": "missing_target_roles"}
+        )
         return
 
     adhoc = args.company if args.company else []
     agent = SearchAgent(resume=resume)
-    results = await agent.run(roles=target_roles, adhoc_companies=adhoc)
+    try:
+        results = await agent.run(roles=target_roles, adhoc_companies=adhoc)
+    except Exception as e:
+        stats = agent.last_run_stats or {}
+        store.record_run(
+            command="search",
+            status="failed",
+            jobs_scored=int(stats.get("jobs_scored") or 0),
+            early_exit_triggered=bool(stats.get("early_exit_triggered")),
+            claude_failures=int(agent.claude_failures or 0),
+            metadata={"error": str(e)}
+        )
+        print(f"\n❌ Search run failed: {e}")
+        return
 
     if not results:
         print("\nNo qualifying postings met the score threshold.")
-        return
+    else:
+        print(f"\nFound {len(results)} postings. Top matches:\n")
+        for i, job in enumerate(results[:10], 1):
+            score = float(job.get("score") or 0)
+            title = job.get("title") or "Unknown title"
+            company = job.get("company") or "Unknown company"
+            url = job.get("url") or ""
+            print(f"  {i:2}. [{score:.0f}%] {title} @ {company}")
+            print(f"       {url}")
 
-    print(f"\nFound {len(results)} postings. Top matches:\n")
-    for i, job in enumerate(results[:10], 1):
-        score = float(job.get("score") or 0)
-        title = job.get("title") or "Unknown title"
-        company = job.get("company") or "Unknown company"
-        url = job.get("url") or ""
-        print(f"  {i:2}. [{score:.0f}%] {title} @ {company}")
-        print(f"       {url}")
+        # Persist results to state store (single persistence path)
+        store.save_jobs(results)
+        print(f"\n✅ Saved {len(results)} jobs to state store.")
 
-    # Persist results to state store (single persistence path)
-    store = StateStore()
-    store.save_jobs(results)
-    print(f"\n✅ Saved {len(results)} jobs to state store.")
+    stats = agent.last_run_stats or {}
+    store.record_run(
+        command="search",
+        status="success" if results else "empty",
+        jobs_scored=int(stats.get("jobs_scored") or 0),
+        early_exit_triggered=bool(stats.get("early_exit_triggered")),
+        claude_failures=int(stats.get("claude_failures") or agent.claude_failures or 0),
+        metadata={
+            **stats,
+            "qualified_returned": len(results),
+            "adhoc_companies": adhoc,
+        }
+    )
 
 
 async def run_apply(args):
     """Generate a full application package for a job URL."""
     print("\n=== APPLICATION PIPELINE ===")
-    resume = load_resume()
     store = StateStore()
+    resume = load_resume()
 
     # Step 1: Parse the job description
     print(f"📄 Parsing job description from: {args.url}")
-    jd = await parse_jd(args.url)
+    try:
+        jd = await parse_jd(args.url)
+    except Exception as e:
+        store.record_run(
+            command="apply",
+            status="failed",
+            claude_failures=1,
+            metadata={"error": f"jd_parse_failed: {e}", "url": args.url}
+        )
+        print(f"❌ Failed to parse JD: {e}")
+        return
     print(f"   Role: {jd['title']} @ {jd['company']}")
 
     # Step 2: Tailor resume in parallel with cover letter generation
@@ -101,10 +412,20 @@ async def run_apply(args):
     resume_agent = ResumeAgent(resume=resume)
     cover_agent = CoverLetterAgent(resume=resume)
 
-    tailored_resume, cover_letter = await asyncio.gather(
-        resume_agent.run(jd=jd),
-        cover_agent.run(jd=jd)
-    )
+    try:
+        tailored_resume, cover_letter = await asyncio.gather(
+            resume_agent.run(jd=jd),
+            cover_agent.run(jd=jd)
+        )
+    except Exception as e:
+        store.record_run(
+            command="apply",
+            status="failed",
+            claude_failures=1,
+            metadata={"error": f"resume_or_cover_generation_failed: {e}", "url": args.url}
+        )
+        print(f"❌ Application generation failed: {e}")
+        return
 
     # Step 3: Save outputs to applications directory
     slug = f"{jd['company'].lower().replace(' ', '_')}_{jd['title'].lower().replace(' ', '_')}"
@@ -131,6 +452,22 @@ async def run_apply(args):
         }, f, indent=2)
 
     store.save_application(args.url, str(app_dir))
+    store.record_run(
+        command="apply",
+        status="success",
+        metadata={
+            "url": args.url,
+            "app_dir": str(app_dir),
+            "company": jd.get("company"),
+            "role": jd.get("title"),
+            "files": {
+                "jd_json": True,
+                "tailored_resume_json": True,
+                "cover_letter_md": True,
+                "meta_json": True,
+            }
+        }
+    )
 
     print(f"\n✅ Application package saved to: {app_dir}")
     print(f"   - jd.json              (parsed job description)")
@@ -149,6 +486,11 @@ async def run_gaps(args):
 
     if not recent_jobs:
         print("⚠️  No jobs in state store yet. Run `python orchestrator.py search` first.")
+        store.record_run(
+            command="gaps",
+            status="empty",
+            metadata={"reason": "no_recent_jobs"}
+        )
         return
 
     print("🧠 Ensuring postings have skill lists (backfills older SQLite rows)...")
@@ -180,11 +522,17 @@ async def run_gaps(args):
         return
 
     # Step 2: Planner analyzes and triages
-    planner = ProjectPlannerAgent(resume=resume)
+    planner = ProjectPlannerAgent(resume=resume, store=store)
     try:
         analyzed_gaps = await planner.analyze(gaps=raw_gaps)
     except RuntimeError as e:
         print(f"❌ Planner analyze step failed: {e}")
+        store.record_run(
+            command="gaps",
+            status="failed",
+            claude_failures=max(1, planner.claude_failures),
+            metadata={"error": str(e), "phase": "analyze"}
+        )
         return
 
     freq_by_skill = {(g["skill"] or "").lower(): int(g.get("frequency") or 0) for g in raw_gaps}
@@ -213,6 +561,12 @@ async def run_gaps(args):
     if not project_gaps:
         print("ℹ️  Planner recommends no portfolio projects for current gaps.")
         print("   Consider certifications or contributions instead.")
+        store.record_run(
+            command="gaps",
+            status="success",
+            claude_failures=planner.claude_failures,
+            metadata={"project_gaps": 0, "analyzed_gaps": len(analyzed_gaps)}
+        )
         return
 
     # Step 3: Generate options for the top gap (or iterate manually)
@@ -221,24 +575,88 @@ async def run_gaps(args):
         options = await planner.generate_options(gap=top_gap)
     except RuntimeError as e:
         print(f"❌ Planner options step failed: {e}")
+        store.record_run(
+            command="gaps",
+            status="failed",
+            claude_failures=max(1, planner.claude_failures),
+            metadata={"error": str(e), "phase": "generate_options"}
+        )
         return
 
     if not options:
         print("⚠️  Planner returned no project options — nothing to build.")
+        store.record_run(
+            command="gaps",
+            status="empty",
+            claude_failures=planner.claude_failures,
+            metadata={"reason": "no_options"}
+        )
         return
+
+    selected_idea = planner.pick_idea_for_builder()
+    selected_option = options[0]
+    selected_gap = top_gap
+    if selected_idea:
+        selected_option = selected_idea.get("option") or selected_option
+        selected_gap = selected_idea.get("gap") or selected_gap
+        print("\n  🎯 Builder handoff (one idea only):")
+        print(f"     idea_key: {selected_idea.get('idea_key')}")
+        print(f"     title: {selected_idea.get('title')}")
+        print(f"     status: {selected_idea.get('status')}")
 
     if args.build:
         print("\n  🏗️  --build flag set, proceeding with Option 1...")
         try:
-            brief = await planner.build_brief(option=options[0], gap=top_gap)
+            brief = await planner.build_brief(option=selected_option, gap=selected_gap)
         except RuntimeError as e:
             print(f"❌ Planner brief step failed: {e}")
+            store.record_run(
+                command="gaps",
+                status="failed",
+                claude_failures=max(1, planner.claude_failures),
+                metadata={"error": str(e), "phase": "build_brief"}
+            )
             return
         builder = ProjectBuilderAgent(resume=resume)
-        await builder.build(brief=brief, output_dir=Path("data/projects"))
+        project_dir = await builder.build(
+            brief=brief,
+            output_dir=PROJECTS_DIR,
+            idea_key=(selected_idea or {}).get("idea_key")
+        )
+        active_idea_key = builder.last_build_info.get("idea_key")
+        if active_idea_key:
+            store.update_project_idea_status(
+                idea_key=active_idea_key,
+                status="in_progress",
+                project_dir=str(project_dir)
+            )
+        store.record_run(
+            command="gaps",
+            status="success",
+            claude_failures=planner.claude_failures,
+            metadata={
+                "analyzed_gaps": len(analyzed_gaps),
+                "project_gaps": len(project_gaps),
+                "selected_idea_key": (selected_idea or {}).get("idea_key"),
+                "builder_mode": builder.last_build_info.get("mode"),
+                "project_dir": str(project_dir),
+                "build": True,
+            }
+        )
     else:
         print("  💡 Run with --build to auto-scaffold Option 1,")
         print("     or call planner/builder manually for full control.\n")
+        store.record_run(
+            command="gaps",
+            status="success",
+            claude_failures=planner.claude_failures,
+            metadata={
+                "analyzed_gaps": len(analyzed_gaps),
+                "project_gaps": len(project_gaps),
+                "selected_idea_key": (selected_idea or {}).get("idea_key"),
+                "build": False,
+            }
+        )
 
 
 def main():
@@ -263,6 +681,18 @@ def main():
         help="Auto-scaffold the top recommended project (Option 1) without manual review"
     )
 
+    # status command
+    status_p = subparsers.add_parser(
+        "status",
+        help="Show output/performance dashboard for jobs, applications, ideas, and run history"
+    )
+    status_p.add_argument(
+        "--format",
+        choices=["text", "json", "html"],
+        default="text",
+        help="Output format (default: text)"
+    )
+
     args = parser.parse_args()
 
     if args.command == "search":
@@ -271,6 +701,8 @@ def main():
         asyncio.run(run_apply(args))
     elif args.command == "gaps":
         asyncio.run(run_gaps(args))
+    elif args.command == "status":
+        run_status(args)
     else:
         parser.print_help()
 

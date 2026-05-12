@@ -31,6 +31,10 @@ from tools.job_skills import enrich_jobs_skill_lists
 
 client = AsyncAnthropic()
 
+# Rolling quality guardrail configuration
+LOW_SCORE_THRESHOLD = 50
+CONSECUTIVE_LOW_SCORE_LIMIT = 3
+
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 DISCOVERY_SYSTEM = """You are a technical recruiter and ML industry analyst.
@@ -123,6 +127,11 @@ class SearchAgent:
     def __init__(self, resume: dict):
         self.resume = resume
         self.resume_summary = self._build_resume_summary()
+        self.claude_failures = 0
+        self.last_run_stats = {}
+
+    def _record_claude_failure(self):
+        self.claude_failures += 1
 
     def _build_resume_summary(self) -> str:
         r = self.resume
@@ -149,15 +158,21 @@ class SearchAgent:
             "candidate": json.loads(self.resume_summary)
         }, indent=2)
 
-        response = await client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=2000,
-            system=DISCOVERY_SYSTEM,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        try:
+            response = await client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=2000,
+                system=DISCOVERY_SYSTEM,
+                messages=[{"role": "user", "content": prompt}]
+            )
+        except Exception as e:
+            self._record_claude_failure()
+            print(f"  ❌ Company discovery call failed: {e}")
+            return []
         try:
             companies = loads_llm_json(response.content[0].text)
         except ValueError as e:
+            self._record_claude_failure()
             print(f"  ❌ Failed to parse company discovery JSON: {e}")
             return []
         if not isinstance(companies, list):
@@ -169,15 +184,21 @@ class SearchAgent:
     async def _research_adhoc_company(self, company_name: str) -> dict:
         """Research a single named company and detect its ATS."""
         print(f"  🔎 Researching: {company_name}")
-        response = await client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=300,
-            system=ATS_DETECT_SYSTEM,
-            messages=[{"role": "user", "content": f"Company: {company_name}"}]
-        )
         try:
-            info = loads_llm_json(response.content[0].text)
+            response = await client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=300,
+                system=ATS_DETECT_SYSTEM,
+                messages=[{"role": "user", "content": f"Company: {company_name}"}]
+            )
+        except Exception as e:
+            self._record_claude_failure()
+            print(f"    ⚠️  ATS detect call failed for {company_name}: {e}")
+            response = None
+        try:
+            info = loads_llm_json(response.content[0].text) if response else {}
         except ValueError as e:
+            self._record_claude_failure()
             print(f"    ⚠️  ATS detect JSON invalid for {company_name}: {e}")
             info = {}
         if not isinstance(info, dict):
@@ -307,6 +328,7 @@ class SearchAgent:
             try:
                 listings = loads_llm_json(response.content[0].text)
             except ValueError as e:
+                self._record_claude_failure()
                 print(f"    ⚠️  Custom listings JSON invalid ({company['name']}): {e}")
                 return []
             if not isinstance(listings, list):
@@ -326,6 +348,7 @@ class SearchAgent:
                 for j in listings
             ]
         except Exception as e:
+            self._record_claude_failure()
             print(f"    ⚠️  Custom scrape failed ({company['name']}): {e}")
             return []
 
@@ -365,6 +388,7 @@ Description:
                 raise ValueError("scoring payload is not a JSON object")
             return {**job, **scoring}
         except Exception as e:
+            self._record_claude_failure()
             print(f"    ⚠️  Scoring failed ({title}): {e}")
             return {**job, "score": 0, "match_reasons": [], "gap_reasons": []}
 
@@ -386,11 +410,27 @@ Description:
           6. Score each against resume
           7. Return sorted results (orchestrator persists to SQLite)
         """
+        self.claude_failures = 0
+        self.last_run_stats = {
+            "companies_discovered": 0,
+            "companies_processed": 0,
+            "raw_postings": 0,
+            "postings_after_role_filter": 0,
+            "jobs_scored": 0,
+            "qualified_jobs": 0,
+            "early_exit_triggered": False,
+            "low_score_threshold": LOW_SCORE_THRESHOLD,
+            "consecutive_low_score_limit": CONSECUTIVE_LOW_SCORE_LIMIT,
+            "claude_failures": 0,
+        }
+
         # 1. Discover
         companies = await self._discover_companies(roles)
         if not companies:
             print("  ⚠️  No companies discovered — aborting search run.")
+            self.last_run_stats["claude_failures"] = self.claude_failures
             return []
+        self.last_run_stats["companies_discovered"] = len(companies)
 
         # 2. Ad-hoc merge
         if adhoc_companies:
@@ -400,6 +440,7 @@ Description:
             )
             companies.extend(adhoc)
             print(f"  📍 Total companies: {len(companies)}")
+        self.last_run_stats["companies_processed"] = len(companies)
 
         # 3. Fetch jobs
         print(f"\n  📥 Fetching from {len(companies)} companies...")
@@ -407,6 +448,7 @@ Description:
         for batch in await asyncio.gather(*[self._fetch_company_jobs(c) for c in companies]):
             all_jobs.extend(batch)
         print(f"  📋 Raw postings: {len(all_jobs)}")
+        self.last_run_stats["raw_postings"] = len(all_jobs)
 
         # 4. Role filter
         keywords = [r.lower() for r in roles]
@@ -415,7 +457,9 @@ Description:
             if any(kw in (j.get("title") or "").lower() for kw in keywords)
         ]
         print(f"  🎯 After role filter: {len(filtered)}")
+        self.last_run_stats["postings_after_role_filter"] = len(filtered)
         if not filtered:
+            self.last_run_stats["claude_failures"] = self.claude_failures
             return []
 
         # 5. Skill lists for downstream gap analysis
@@ -423,14 +467,34 @@ Description:
         filtered = await enrich_jobs_skill_lists(filtered, persist_store=None)
 
         # 6. Score
-        print(f"  ⚡ Scoring {len(filtered)} postings...")
-        sem = asyncio.Semaphore(5)
+        print(f"  ⚡ Scoring up to {len(filtered)} postings...")
+        scored = []
+        consecutive_low = 0
+        for index, job in enumerate(filtered, 1):
+            scored_job = await self._score_job(job)
+            scored.append(scored_job)
+            self.last_run_stats["jobs_scored"] += 1
+            score = float(scored_job.get("score") or 0)
 
-        async def score_throttled(job):
-            async with sem:
-                return await self._score_job(job)
+            if score < LOW_SCORE_THRESHOLD:
+                consecutive_low += 1
+                print(
+                    f"    ↳ Low score streak: {consecutive_low}/{CONSECUTIVE_LOW_SCORE_LIMIT} "
+                    f"(score={score:.0f}, threshold={LOW_SCORE_THRESHOLD})"
+                )
+                if consecutive_low >= CONSECUTIVE_LOW_SCORE_LIMIT:
+                    self.last_run_stats["early_exit_triggered"] = True
+                    print(
+                        "  ⚠️  Search halted early: consecutive low-signal jobs exceeded "
+                        f"limit ({CONSECUTIVE_LOW_SCORE_LIMIT} below {LOW_SCORE_THRESHOLD})."
+                    )
+                    break
+            else:
+                consecutive_low = 0
 
-        scored = await asyncio.gather(*[score_throttled(j) for j in filtered])
+            if index < len(filtered):
+                remaining = len(filtered) - index
+                print(f"    ↳ Progress: scored {index}/{len(filtered)} (remaining {remaining})")
 
         # 7. Return qualified (persistence handled by orchestrator)
         qualified = sorted(
@@ -438,5 +502,7 @@ Description:
             key=lambda x: x.get("score", 0),
             reverse=True
         )
+        self.last_run_stats["qualified_jobs"] = len(qualified)
+        self.last_run_stats["claude_failures"] = self.claude_failures
         print(f"  ✅ Qualified (score ≥ {min_score}): {len(qualified)}")
         return qualified

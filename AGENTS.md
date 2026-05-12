@@ -33,6 +33,14 @@ A structured resume file at `job_agent/data/luke_ganalon_resume.json` is require
 - The `apply` command is the best end-to-end test: it exercises the JD parser (real HTTP fetch), ResumeAgent (bullet ranking + summary rewrite), and CoverLetterAgent (generation) in parallel, with no discovery dependency.
 - `search --company` still runs the full discovery step first; ad-hoc companies are merged after discovery succeeds.
 
+### SearchAgent
+
+- A rolling quality guardrail halts scoring early when low-signal streaks are detected.
+- Defaults are defined in `agents/search_agent.py`:
+  - `LOW_SCORE_THRESHOLD = 50`
+  - `CONSECUTIVE_LOW_SCORE_LIMIT = 3`
+- If 3 consecutive scored jobs are below 50, SearchAgent logs a warning and stops scoring more listings for that run.
+
 ### Local components that work without API key
 
 - `tools/state_store.py` — SQLite CRUD (auto-creates `data/job_agent.db`)
