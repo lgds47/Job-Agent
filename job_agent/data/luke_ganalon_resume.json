@@ -267,7 +267,7 @@
     }
   ],
   "agent_metadata": {
-    "target_roles": [],
+    "target_roles": ["Machine Learning Engineer", "ML Engineer", "AI Engineer", "AI Scientist", "Data Scientist", "AI ML Engineer"],
     "skill_gaps": [],
     "applications": [],
     "notes": "Populate target_roles and skill_gaps after first job search agent run."
