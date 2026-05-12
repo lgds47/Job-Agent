@@ -43,6 +43,8 @@ Do not edit source to fake flags. For API-free checks, test local modules direct
 
 ## Testing workflows by codebase area
 
+No linter or automated test framework is configured. Use CLI/import smoke checks and focused tool snippets as the baseline, then run the relevant integration command when credentials and data are available.
+
 | Area | Fast check | End-to-end check |
 |---|---|---|
 | CLI/orchestrator | `python orchestrator.py --help` | With key + resume, `python orchestrator.py apply --url "<real job URL>"` and verify `data/applications/YYYYMMDD_company_title_slug/{jd.json,tailored_resume.json,cover_letter.md,meta.json}` |
@@ -55,7 +57,7 @@ Do not edit source to fake flags. For API-free checks, test local modules direct
 
 1. `cd /workspace/job_agent && source .venv/bin/activate` for every run.
 2. If `.venv` is missing, recreate it and install `requirements.txt`.
-3. Confirm `ANTHROPIC_API_KEY` and `data/luke_ganalon_resume.json` exist before testing LLM flows or `gaps`.
+3. Confirm `data/luke_ganalon_resume.json` exists before running `gaps`; add `ANTHROPIC_API_KEY` when testing LLM flows or when `gaps` has qualifying jobs that may need skill backfill/planning.
 4. Prefer `apply --url` for reliable full-pipeline testing, but expect real job URLs to fail when a board blocks HTTP fetches, returns thin HTML, or rate-limits.
 5. Treat `search` as fragile: discovery can fail from model JSON truncation, and `search --company` still performs discovery first.
 6. Treat generated `data/applications/` and `data/projects/` outputs as test artifacts unless the user asks to preserve them.
