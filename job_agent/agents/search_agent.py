@@ -31,6 +31,13 @@ from tools.job_skills import enrich_jobs_skill_lists
 
 client = AsyncAnthropic()
 
+# ── Early-exit guardrail constants ────────────────────────────────────────────
+# Halt scoring early if a streak of consecutive postings score below the
+# threshold. Prevents the agent from spending more tokens on a clearly weak
+# batch of listings.
+EARLY_EXIT_CONSECUTIVE_LOW = 3   # how many low-scoring jobs in a row trigger exit
+EARLY_EXIT_SCORE_THRESHOLD = 50  # a score < this counts as "low" for streak purposes
+
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 DISCOVERY_SYSTEM = """You are a technical recruiter and ML industry analyst.
@@ -123,6 +130,12 @@ class SearchAgent:
     def __init__(self, resume: dict):
         self.resume = resume
         self.resume_summary = self._build_resume_summary()
+        # Per-run stats, surfaced to the orchestrator for run-history logging.
+        self.stats = {
+            "jobs_scored": 0,
+            "early_exits": 0,
+            "claude_failures": 0,
+        }
 
     def _build_resume_summary(self) -> str:
         r = self.resume
@@ -366,6 +379,7 @@ Description:
             return {**job, **scoring}
         except Exception as e:
             print(f"    ⚠️  Scoring failed ({title}): {e}")
+            self.stats["claude_failures"] += 1
             return {**job, "score": 0, "match_reasons": [], "gap_reasons": []}
 
     # ── Main Entry ────────────────────────────────────────────────────────────
@@ -422,15 +436,43 @@ Description:
         print("  🧠 Extracting skills from posting text (LLM)...")
         filtered = await enrich_jobs_skill_lists(filtered, persist_store=None)
 
-        # 6. Score
-        print(f"  ⚡ Scoring {len(filtered)} postings...")
-        sem = asyncio.Semaphore(5)
-
-        async def score_throttled(job):
-            async with sem:
-                return await self._score_job(job)
-
-        scored = await asyncio.gather(*[score_throttled(j) for j in filtered])
+        # 6. Score (in batches, with rolling early-exit on consecutive low scores)
+        print(
+            f"  ⚡ Scoring {len(filtered)} postings "
+            f"(early-exit after {EARLY_EXIT_CONSECUTIVE_LOW} consecutive "
+            f"scores < {EARLY_EXIT_SCORE_THRESHOLD})..."
+        )
+        scored: list[dict] = []
+        consecutive_low = 0
+        # Score the streak window concurrently for some parallelism, but check
+        # the rolling streak after each batch so we can halt early.
+        batch_size = max(1, EARLY_EXIT_CONSECUTIVE_LOW)
+        for batch_start in range(0, len(filtered), batch_size):
+            batch = filtered[batch_start:batch_start + batch_size]
+            batch_scored = await asyncio.gather(*[self._score_job(j) for j in batch])
+            for job in batch_scored:
+                scored.append(job)
+                self.stats["jobs_scored"] += 1
+                try:
+                    score_val = float(job.get("score") or 0)
+                except (TypeError, ValueError):
+                    score_val = 0.0
+                if score_val < EARLY_EXIT_SCORE_THRESHOLD:
+                    consecutive_low += 1
+                else:
+                    consecutive_low = 0
+                if consecutive_low >= EARLY_EXIT_CONSECUTIVE_LOW:
+                    self.stats["early_exits"] += 1
+                    remaining = len(filtered) - len(scored)
+                    print(
+                        f"  ⛔ Early exit: {consecutive_low} consecutive postings "
+                        f"scored < {EARLY_EXIT_SCORE_THRESHOLD}. "
+                        f"Halting after {len(scored)} of {len(filtered)} "
+                        f"({remaining} skipped)."
+                    )
+                    break
+            if consecutive_low >= EARLY_EXIT_CONSECUTIVE_LOW:
+                break
 
         # 7. Return qualified (persistence handled by orchestrator)
         qualified = sorted(
