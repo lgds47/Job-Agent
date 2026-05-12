@@ -23,12 +23,12 @@ Scoring: Claude rates each JD 0-100 with early-career fit awareness.
 import json
 import asyncio
 import httpx
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 
 from tools.llm_json import loads_llm_json
 from tools.job_skills import enrich_jobs_skill_lists
 
-client = Anthropic()
+client = AsyncAnthropic()
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
@@ -146,8 +146,8 @@ class SearchAgent:
             "candidate": json.loads(self.resume_summary)
         }, indent=2)
 
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+        response = await client.messages.create(
+            model="claude-sonnet-4-5",
             max_tokens=2000,
             system=DISCOVERY_SYSTEM,
             messages=[{"role": "user", "content": prompt}]
@@ -166,8 +166,8 @@ class SearchAgent:
     async def _research_adhoc_company(self, company_name: str) -> dict:
         """Research a single named company and detect its ATS."""
         print(f"  🔎 Researching: {company_name}")
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+        response = await client.messages.create(
+            model="claude-sonnet-4-5",
             max_tokens=300,
             system=ATS_DETECT_SYSTEM,
             messages=[{"role": "user", "content": f"Company: {company_name}"}]
@@ -295,8 +295,8 @@ class SearchAgent:
                 tag.decompose()
             text = soup.get_text(separator="\n", strip=True)[:5000]
 
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+            response = await client.messages.create(
+                model="claude-sonnet-4-5",
                 max_tokens=800,
                 system=CUSTOM_CAREERS_SYSTEM,
                 messages=[{"role": "user", "content": f"Company: {company['name']}\n\n{text}"}]
@@ -351,8 +351,8 @@ Description:
 {job.get('description', '')[:1500]}
 """
         try:
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+            response = await client.messages.create(
+                model="claude-sonnet-4-5",
                 max_tokens=400,
                 system=SCORE_SYSTEM,
                 messages=[{"role": "user", "content": prompt}]

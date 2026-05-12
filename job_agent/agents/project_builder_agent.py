@@ -27,11 +27,11 @@ import asyncio
 import hashlib
 import re
 from pathlib import Path
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 
 from tools.text_sanitize import strip_code_fences
 
-client = Anthropic()
+client = AsyncAnthropic()
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
@@ -78,8 +78,8 @@ File role: {file_role}
 Dataset: {brief['dataset']['name']}
 Key components: {json.dumps(brief['architecture']['key_components'])}
 """
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+        response = await client.messages.create(
+            model="claude-sonnet-4-5",
             max_tokens=1500,
             system=CODE_GEN_SYSTEM,
             messages=[{"role": "user", "content": prompt}]
@@ -88,8 +88,8 @@ Key components: {json.dumps(brief['architecture']['key_components'])}
 
     async def _generate_readme(self, brief: dict) -> str:
         """Generate the project README."""
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+        response = await client.messages.create(
+            model="claude-sonnet-4-5",
             max_tokens=1000,
             system=README_SYSTEM,
             messages=[{"role": "user", "content": json.dumps(brief, indent=2)}]
@@ -102,8 +102,8 @@ Key components: {json.dumps(brief['architecture']['key_components'])}
         optional = brief["stack"].get("optional", [])
 
         # Ask Claude to resolve package names and pin reasonable versions
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+        response = await client.messages.create(
+            model="claude-sonnet-4-5",
             max_tokens=300,
             system="Return only a requirements.txt file content. Pin reasonable versions. No comments, no markdown.",
             messages=[{"role": "user", "content": f"Generate requirements.txt for: {core + optional}"}]

@@ -12,9 +12,9 @@ Uses only the parsed JD fields and resume JSON passed into the prompt (no live w
 """
 
 import json
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 
-client = Anthropic()
+client = AsyncAnthropic()
 
 COVER_LETTER_SYSTEM = """You are an expert cover letter writer for technical roles (ML engineering, data science, MLOps).
 
@@ -96,8 +96,8 @@ Tone: {tone}
 Grounding: only reference company facts that appear in JOB DESCRIPTION or CANDIDATE above.
 """
 
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+        response = await client.messages.create(
+            model="claude-sonnet-4-5",
             max_tokens=700,
             system=COVER_LETTER_SYSTEM,
             messages=[{"role": "user", "content": prompt}]

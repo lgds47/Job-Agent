@@ -14,11 +14,11 @@ resume, never modifying the original.
 
 import json
 import copy
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 
 from tools.llm_json import loads_llm_json
 
-client = Anthropic()
+client = AsyncAnthropic()
 
 BULLET_SCORE_SYSTEM = """You are a resume tailoring expert.
 Given a job description and a list of resume bullet points (each with an id),
@@ -73,8 +73,8 @@ class ResumeAgent:
             "keywords": jd.get("keywords", [])
         })
 
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+        response = await client.messages.create(
+            model="claude-sonnet-4-5",
             max_tokens=1000,
             system=BULLET_SCORE_SYSTEM,
             messages=[{"role": "user", "content": f"JD:\n{jd_summary}\n\nBullets:\n{json.dumps(bullet_list)}"}]
@@ -102,8 +102,8 @@ Required skills: {', '.join(jd.get('required_skills', []))}
 Responsibilities: {', '.join(jd.get('responsibilities', [])[:5])}
 Keywords: {', '.join(jd.get('keywords', []))}
 """
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+        response = await client.messages.create(
+            model="claude-sonnet-4-5",
             max_tokens=300,
             system=SUMMARY_REWRITE_SYSTEM,
             messages=[{"role": "user", "content": f"Original summary:\n{original}\n\nTarget JD:\n{jd_text}"}]

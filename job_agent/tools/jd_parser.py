@@ -9,11 +9,11 @@ import asyncio
 import json
 import httpx
 from bs4 import BeautifulSoup
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 
 from tools.llm_json import loads_llm_json
 
-client = Anthropic()
+client = AsyncAnthropic()
 
 SYSTEM_PROMPT = """You are a job description parser. Extract structured data from the job posting text provided.
 Return ONLY valid JSON, no preamble, no markdown fences.
@@ -50,7 +50,8 @@ Rules:
 """
 
 
-def _extract_skills_sync(title: str, company: str, description: str) -> dict:
+async def extract_skills_from_posting(title: str, company: str, description: str) -> dict:
+    """Infer required/preferred skills from posting text (used by Search + gaps backfill)."""
     snippet = (description or "")[:4500]
     user = f"""Job title: {title}
 Company: {company}
@@ -58,8 +59,8 @@ Company: {company}
 Posting text:
 {snippet}
 """
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+    response = await client.messages.create(
+        model="claude-sonnet-4-5",
         max_tokens=600,
         system=EXTRACT_SKILLS_SYSTEM,
         messages=[{"role": "user", "content": user}],
@@ -74,11 +75,6 @@ Posting text:
         "required_skills": [str(s).strip() for s in req if str(s).strip()],
         "preferred_skills": [str(s).strip() for s in pref if str(s).strip()],
     }
-
-
-async def extract_skills_from_posting(title: str, company: str, description: str) -> dict:
-    """Infer required/preferred skills from posting text (used by Search + gaps backfill)."""
-    return await asyncio.to_thread(_extract_skills_sync, title, company, description)
 
 
 async def parse_jd(url: str) -> dict:
@@ -102,9 +98,8 @@ async def parse_jd(url: str) -> dict:
     raw_text = raw_text[:6000]
 
     # Ask Claude to extract structure
-    response = await asyncio.to_thread(
-        client.messages.create,
-        model="claude-sonnet-4-20250514",
+    response = await client.messages.create(
+        model="claude-sonnet-4-5",
         max_tokens=1000,
         system=SYSTEM_PROMPT,
         messages=[

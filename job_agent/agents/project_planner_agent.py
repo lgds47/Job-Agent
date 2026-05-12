@@ -36,11 +36,11 @@ Usage:
 """
 
 import json
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 
 from tools.llm_json import loads_llm_json
 
-client = Anthropic()
+client = AsyncAnthropic()
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
@@ -200,8 +200,8 @@ class ProjectPlannerAgent:
 Skill gaps from job postings:
 {json.dumps(gaps, indent=2)}
 """
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+        response = await client.messages.create(
+            model="claude-sonnet-4-5",
             max_tokens=2000,
             system=GAP_TRIAGE_SYSTEM,
             messages=[{"role": "user", "content": prompt}]
@@ -260,8 +260,8 @@ Gap level: {gap['gap_level']}
 Candidate head start: {gap.get('candidate_head_start', 'none noted')}
 Candidate's existing stack: {json.dumps(self.candidate_skills)}
 """
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+        response = await client.messages.create(
+            model="claude-sonnet-4-5",
             max_tokens=2000,
             system=OPTIONS_SYSTEM,
             messages=[{"role": "user", "content": prompt}]
@@ -322,8 +322,8 @@ Chosen option:
 Candidate's existing skills (use as building blocks):
 {json.dumps(self.candidate_skills)}
 """
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+        response = await client.messages.create(
+            model="claude-sonnet-4-5",
             max_tokens=2000,
             system=BRIEF_SYSTEM,
             messages=[{"role": "user", "content": prompt}]
