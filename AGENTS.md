@@ -44,3 +44,7 @@ A structured resume file at `job_agent/data/luke_ganalon_resume.json` is require
 ### No linter or test framework configured
 
 This codebase has no linter config (no `pyproject.toml`, no `ruff.toml`, no `flake8` config) and no automated tests. Import verification (`python -c "from agents.search_agent import SearchAgent; ..."`) is the closest equivalent to a lint check.
+
+### Starter skill
+
+A hands-on runbook for Cloud agents is at `skills/running-and-testing-job-agent/SKILL.md`. Read it before running any commands or debugging a failure — it covers environment setup, per-area testing workflows, common failure modes, and instructions for keeping the skill up to date.
