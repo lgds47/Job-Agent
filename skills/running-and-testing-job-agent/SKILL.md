@@ -7,7 +7,7 @@ description: Use when starting work in this job-search pipeline codebase, before
 
 ## Overview
 
-Python CLI — no server, no Docker. Entry point: `job_agent/orchestrator.py`. Three subcommands: `search`, `apply`, `gaps`. All LLM calls use `claude-sonnet-4-5` via `ANTHROPIC_API_KEY`.
+Python CLI — no server, no Docker. Entry point: `job_agent/orchestrator.py`. Subcommands: `search`, `apply`, `gaps`, `status`. All LLM calls use `claude-sonnet-4-5` via `ANTHROPIC_API_KEY`. `status` is local-only (no API key needed).
 
 ## Required Setup (Every Cloud Session)
 
@@ -69,17 +69,42 @@ python orchestrator.py apply --url "https://jobs.lever.co/anthropic/SOME-JOB-ID"
 # Also upserts an applications row in data/job_agent.db
 ```
 
+#### SearchAgent — early-exit guardrail
+
+Scoring is sequential. After each scored job, if `EARLY_EXIT_CONSECUTIVE_LOW` (default 3) consecutive scores are all below `EARLY_EXIT_SCORE_THRESHOLD` (default 50), the agent prints a warning and halts the scoring loop early. Adjust constants at the top of `agents/search_agent.py`. Stats (`jobs_scored`, `early_exit_triggered`, `claude_failures`) are written to `run_logs` table after each search run.
+
+#### ProjectPlannerAgent — store all ideas, pass one at a time
+
+`generate_options` persists all generated options to the `project_ideas` table (deduplicating by title) but returns only the oldest pending idea to the caller. Ideas that aren't selected remain `pending` for future runs. `build_brief` marks the idea as `started` and stores the brief JSON. This prevents the builder from being handed multiple competing ideas in a single run.
+
+#### ProjectBuilderAgent — finish before starting
+
+On each `build` call, the builder first scans `data/projects/` for directories without `completed.json`. If any incomplete project is found, the builder refines the most recently modified one (generates missing files, regenerates README/requirements) and writes `completed.json` — instead of scaffolding the new brief. The new brief is deferred to the next run when no incomplete projects remain.
+
 ### orchestrator.py — subcommands
 
-```bash
-python orchestrator.py --help          # always safe, no API key required
+| Command | API key? | What it does |
+|---------|----------|--------------|
+| `python orchestrator.py --help` | No | List all subcommands |
+| `python orchestrator.py search` | Yes | Discovery + scoring; logs run stats |
+| `python orchestrator.py search --company "Glean" "Cohere"` | Yes | Append ad-hoc companies |
+| `python orchestrator.py apply --url URL` | Yes | Full application package for one URL |
+| `python orchestrator.py gaps` | Yes | Gap analysis; stores all project ideas |
+| `python orchestrator.py gaps --build` | Yes | Gap analysis + auto-scaffold next idea |
+| `python orchestrator.py status` | No | Read-only terminal dashboard |
+| `python orchestrator.py status --format json` | No | JSON export |
+| `python orchestrator.py status --format html` | No | HTML export |
 
-python orchestrator.py search          # discovery + scoring (may truncate at max_tokens=2000)
-python orchestrator.py search --company "Glean" "Cohere"  # append ad-hoc companies
+### Decision: Which Test to Run
 
-python orchestrator.py gaps            # gap analysis — requires jobs already in DB
-python orchestrator.py gaps --build    # gap analysis + auto-scaffold Option 1 project
-```
+| Goal | Command |
+|------|---------|
+| Verify env is set up correctly (no API) | `python orchestrator.py status` |
+| Test scoring pipeline end-to-end | `python orchestrator.py apply --url URL` |
+| Test discovery + scoring (risk: truncation) | `python orchestrator.py search` |
+| Test gap analysis + idea storage | `python orchestrator.py gaps` |
+| Test full build pipeline | `python orchestrator.py gaps --build` |
+| Inspect what's been produced | `python orchestrator.py status` |
 
 ## Common Failure Modes
 

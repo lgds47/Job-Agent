@@ -1,7 +1,8 @@
 """
 State Store
 ===========
-SQLite-backed persistence layer for jobs, applications, and skill gap history.
+SQLite-backed persistence layer for jobs, applications, skill gap history,
+project ideas, and agent run logs.
 Single source of truth for the orchestrator across runs.
 """
 
@@ -50,6 +51,26 @@ class StateStore:
                     frequency   INTEGER,
                     project_idea TEXT,
                     recorded_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS project_ideas (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title       TEXT,
+                    skill_gap   TEXT,
+                    option_json TEXT,
+                    brief_json  TEXT,
+                    status      TEXT DEFAULT 'pending',
+                    created_at  TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS run_logs (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    command         TEXT,
+                    started_at      TEXT,
+                    jobs_scored     INTEGER DEFAULT 0,
+                    early_exit      INTEGER DEFAULT 0,
+                    claude_failures INTEGER DEFAULT 0,
+                    notes           TEXT
                 );
             """)
 
@@ -154,6 +175,90 @@ class StateStore:
             rows = conn.execute(
                 "SELECT * FROM skill_gaps ORDER BY frequency DESC"
             ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Project Ideas ─────────────────────────────────────────────────────────
+
+    def save_project_ideas(self, ideas: list[dict], skill_gap: str = None):
+        """
+        Persist a list of project option dicts from ProjectPlannerAgent.
+        Skips ideas whose title already exists to avoid duplicates across runs.
+        Returns the list of newly inserted idea IDs.
+        """
+        now = datetime.now().isoformat()
+        inserted_ids = []
+        with self._conn() as conn:
+            for idea in ideas:
+                title = idea.get("title") or "Untitled"
+                existing = conn.execute(
+                    "SELECT id FROM project_ideas WHERE title = ?", (title,)
+                ).fetchone()
+                if existing:
+                    continue
+                cursor = conn.execute("""
+                    INSERT INTO project_ideas (title, skill_gap, option_json, status, created_at)
+                    VALUES (?, ?, ?, 'pending', ?)
+                """, (title, skill_gap, json.dumps(idea), now))
+                inserted_ids.append(cursor.lastrowid)
+        return inserted_ids
+
+    def get_next_pending_idea(self) -> dict | None:
+        """Return the oldest pending project idea, or None if all are started/complete."""
+        with self._conn() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("""
+                SELECT * FROM project_ideas
+                WHERE status = 'pending'
+                ORDER BY created_at ASC
+                LIMIT 1
+            """).fetchone()
+        return dict(row) if row else None
+
+    def get_all_project_ideas(self) -> list[dict]:
+        with self._conn() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM project_ideas ORDER BY created_at DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_project_idea_status(self, idea_id: int, status: str, brief_json: dict = None):
+        """Update idea status: pending → started → complete."""
+        with self._conn() as conn:
+            if brief_json is not None:
+                conn.execute("""
+                    UPDATE project_ideas SET status = ?, brief_json = ? WHERE id = ?
+                """, (status, json.dumps(brief_json), idea_id))
+            else:
+                conn.execute(
+                    "UPDATE project_ideas SET status = ? WHERE id = ?", (status, idea_id)
+                )
+
+    # ── Run Logs ──────────────────────────────────────────────────────────────
+
+    def log_run(
+        self,
+        command: str,
+        jobs_scored: int = 0,
+        early_exit: bool = False,
+        claude_failures: int = 0,
+        notes: str = None,
+    ) -> int:
+        """Record a completed agent run. Returns the inserted row id."""
+        now = datetime.now().isoformat()
+        with self._conn() as conn:
+            cursor = conn.execute("""
+                INSERT INTO run_logs (command, started_at, jobs_scored, early_exit, claude_failures, notes)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (command, now, jobs_scored, int(early_exit), claude_failures, notes))
+            return cursor.lastrowid
+
+    def get_run_logs(self, limit: int = 20) -> list[dict]:
+        with self._conn() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT * FROM run_logs ORDER BY started_at DESC LIMIT ?
+            """, (limit,)).fetchall()
         return [dict(r) for r in rows]
 
     # ── Summary ───────────────────────────────────────────────────────────────

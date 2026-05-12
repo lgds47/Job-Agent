@@ -31,6 +31,13 @@ from tools.job_skills import enrich_jobs_skill_lists
 
 client = AsyncAnthropic()
 
+# ── Early-exit guardrail constants ────────────────────────────────────────────
+# If this many consecutive jobs score below EARLY_EXIT_SCORE_THRESHOLD, the
+# scoring loop halts early rather than continuing to burn API credits on a
+# low-signal batch. Both values are exposed here for easy tuning.
+EARLY_EXIT_CONSECUTIVE_LOW: int = 3
+EARLY_EXIT_SCORE_THRESHOLD: int = 50
+
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 DISCOVERY_SYSTEM = """You are a technical recruiter and ML industry analyst.
@@ -374,7 +381,7 @@ Description:
         self,
         roles: list[str],
         adhoc_companies: list[str] = None,
-        min_score: int = 50
+        min_score: int = 50,
     ) -> list[dict]:
         """
         Full pipeline:
@@ -383,9 +390,19 @@ Description:
           3. Fetch open roles from each company's ATS
           4. Filter to target roles
           5. Extract required/preferred skills for gap analysis
-          6. Score each against resume
+          6. Score each against resume (sequential with early-exit guardrail)
           7. Return sorted results (orchestrator persists to SQLite)
+
+        Early-exit guardrail: if EARLY_EXIT_CONSECUTIVE_LOW consecutive jobs all
+        score below EARLY_EXIT_SCORE_THRESHOLD, scoring halts early. The counts
+        are stored on the instance (self.jobs_scored, self.early_exit_triggered,
+        self.claude_failures) so the orchestrator can log them.
         """
+        # Reset per-run stats
+        self.jobs_scored: int = 0
+        self.early_exit_triggered: bool = False
+        self.claude_failures: int = 0
+
         # 1. Discover
         companies = await self._discover_companies(roles)
         if not companies:
@@ -422,21 +439,42 @@ Description:
         print("  🧠 Extracting skills from posting text (LLM)...")
         filtered = await enrich_jobs_skill_lists(filtered, persist_store=None)
 
-        # 6. Score
-        print(f"  ⚡ Scoring {len(filtered)} postings...")
-        sem = asyncio.Semaphore(5)
+        # 6. Score — sequential with rolling early-exit guardrail.
+        #    Consecutive low scores indicate a low-signal batch; halt rather
+        #    than burning credits on the remaining listings.
+        print(f"  ⚡ Scoring {len(filtered)} postings (early-exit after "
+              f"{EARLY_EXIT_CONSECUTIVE_LOW} consecutive scores < {EARLY_EXIT_SCORE_THRESHOLD})...")
+        scored: list[dict] = []
+        consecutive_low: int = 0
 
-        async def score_throttled(job):
-            async with sem:
-                return await self._score_job(job)
+        for job in filtered:
+            result = await self._score_job(job)
+            self.jobs_scored += 1
+            if result.get("score", 0) == 0 and not result.get("match_reasons"):
+                # Scoring call itself failed — _score_job already printed a warning
+                self.claude_failures += 1
 
-        scored = await asyncio.gather(*[score_throttled(j) for j in filtered])
+            scored.append(result)
+            job_score = float(result.get("score") or 0)
+
+            if job_score < EARLY_EXIT_SCORE_THRESHOLD:
+                consecutive_low += 1
+                if consecutive_low >= EARLY_EXIT_CONSECUTIVE_LOW:
+                    print(
+                        f"\n  ⚠️  Early exit: {consecutive_low} consecutive jobs scored "
+                        f"below {EARLY_EXIT_SCORE_THRESHOLD}. "
+                        f"Halting at {self.jobs_scored}/{len(filtered)} postings."
+                    )
+                    self.early_exit_triggered = True
+                    break
+            else:
+                consecutive_low = 0
 
         # 7. Return qualified (persistence handled by orchestrator)
         qualified = sorted(
             [j for j in scored if j.get("score", 0) >= min_score],
             key=lambda x: x.get("score", 0),
-            reverse=True
+            reverse=True,
         )
         print(f"  ✅ Qualified (score ≥ {min_score}): {len(qualified)}")
         return qualified

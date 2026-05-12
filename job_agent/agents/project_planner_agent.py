@@ -42,6 +42,9 @@ from tools.llm_json import loads_llm_json
 
 client = AsyncAnthropic()
 
+# Type alias kept loose to avoid circular imports with state_store
+_StateStore = object
+
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 GAP_TRIAGE_SYSTEM = """You are a senior ML engineer and career coach.
@@ -170,8 +173,9 @@ Return ONLY a JSON object, no markdown fences:
 
 
 class ProjectPlannerAgent:
-    def __init__(self, resume: dict):
+    def __init__(self, resume: dict, store=None):
         self.resume = resume
+        self.store = store  # optional StateStore for idea persistence
         self.candidate_skills = self._extract_skills()
 
     def _extract_skills(self) -> list[str]:
@@ -247,9 +251,17 @@ Skill gaps from job postings:
     async def generate_options(self, gap: dict) -> list[dict]:
         """
         For a single gap, generate 3 distinct project options with tradeoffs.
-        Prints options clearly so you can choose (or redirect) before briefing.
+        Prints all options so you can redirect before briefing.
 
-        Returns list of ProjectOption dicts.
+        Persistence behaviour (when store is provided):
+          - All generated options are saved to the project_ideas table as
+            'pending', skipping any whose title already exists.
+          - Returns only the single next pending idea (oldest unstarted) so
+            the builder is never overwhelmed. If all ideas are already
+            started/complete, returns all freshly generated options.
+
+        Returns a list containing the single option to pass to the builder,
+        or all options when no store is available.
         """
         print("\n" + "═" * 60)
         print(f"  PROJECT OPTIONS — {gap['skill'].upper()}")
@@ -273,7 +285,7 @@ Candidate's existing stack: {json.dumps(self.candidate_skills)}
         if not isinstance(options, list) or not options:
             raise RuntimeError("ProjectPlannerAgent generate_options: expected a non-empty JSON array.")
 
-        # Print options with tradeoffs
+        # Print all options with tradeoffs
         for i, opt in enumerate(options, 1):
             if not isinstance(opt, dict):
                 print(f"\n  Option {i}: <invalid JSON object — skipping>")
@@ -302,7 +314,28 @@ Candidate's existing stack: {json.dumps(self.candidate_skills)}
         print(f"\n  To proceed: call build_brief(option=options[N], gap=gap)")
         print(f"  To redirect: describe what you want differently\n")
 
-        return options
+        if self.store is None:
+            return options
+
+        # Persist all options; only pass one to the builder
+        skill_gap_name = gap.get("skill", "")
+        new_ids = self.store.save_project_ideas(options, skill_gap=skill_gap_name)
+        total_new = len(new_ids)
+        total_existing = len(options) - total_new
+        print(f"  💾 Stored {total_new} new idea(s) ({total_existing} already existed).")
+
+        next_idea = self.store.get_next_pending_idea()
+        if next_idea:
+            option_data = json.loads(next_idea["option_json"])
+            print(f"  ➡️  Passing idea #{next_idea['id']} to builder: \"{next_idea['title']}\"")
+            print(f"     ({total_new + total_existing - 1} other idea(s) remain stored for future runs)\n")
+            # Attach the store row id so the orchestrator can mark it started
+            option_data["_store_idea_id"] = next_idea["id"]
+            return [option_data]
+
+        # All ideas already started/complete — fall back to first fresh option
+        print("  ℹ️  All stored ideas are started or complete. Using first new option.\n")
+        return [options[0]]
 
     # ── Step 3: Build full project brief ─────────────────────────────────────
 
@@ -311,8 +344,13 @@ Candidate's existing stack: {json.dumps(self.candidate_skills)}
         Produce a full structured ProjectBrief for the chosen option.
         This is the artifact consumed by ProjectBuilderAgent.
 
+        If a store is attached and option contains _store_idea_id, the
+        corresponding project_ideas row is marked 'started' and the generated
+        brief is persisted into it.
+
         Returns a ProjectBrief dict.
         """
+        store_idea_id = option.pop("_store_idea_id", None)
         print(f"\n  📋 Building brief for: {option.get('title', '—')}...")
 
         prompt = f"""Skill to demonstrate: {gap['skill']}
@@ -334,6 +372,10 @@ Candidate's existing skills (use as building blocks):
             raise RuntimeError(f"ProjectPlannerAgent build_brief failed: {e}") from e
         if not isinstance(brief, dict):
             raise RuntimeError("ProjectPlannerAgent build_brief: model did not return a JSON object.")
+
+        # Persist brief and mark idea as started
+        if self.store is not None and store_idea_id is not None:
+            self.store.update_project_idea_status(store_idea_id, "started", brief_json=brief)
 
         # Print summary
         core_stack = (brief.get("stack") or {}).get("core") or []

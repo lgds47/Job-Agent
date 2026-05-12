@@ -14,6 +14,15 @@ Receives an approved ProjectBrief from ProjectPlannerAgent and executes:
   3. REPORT    — Prints a handoff summary: what was built, what to run
                  first, and where to pick up in week 1.
 
+Finish-before-starting policy:
+  Before scaffolding a new project, the builder scans data/projects/ for
+  any directory that lacks a completed.json marker. If an incomplete project
+  exists, the builder selects the most recently modified one and refines it
+  (generates any missing files, regenerates README/requirements) rather than
+  starting fresh. A completed.json is written when all expected files are
+  present. Only when no incomplete projects remain will the builder accept
+  a new brief and scaffold from scratch.
+
 This agent writes actual files to data/projects/{project_slug}/.
 It communicates what it's building as it goes.
 
@@ -26,12 +35,25 @@ import json
 import asyncio
 import hashlib
 import re
+from datetime import datetime
 from pathlib import Path
 from anthropic import AsyncAnthropic
 
 from tools.text_sanitize import strip_code_fences
 
 client = AsyncAnthropic()
+
+EXPECTED_SOURCE_FILES = [
+    "src/train.py",
+    "src/model.py",
+    "src/dataset.py",
+    "src/evaluate.py",
+    "configs/config.yaml",
+    "README.md",
+    "requirements.txt",
+    "MILESTONES.md",
+    "project_brief.json",
+]
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
@@ -64,6 +86,85 @@ Rules:
 class ProjectBuilderAgent:
     def __init__(self, resume: dict):
         self.resume = resume
+
+    # ── Finish-before-starting helpers ────────────────────────────────────────
+
+    def _find_incomplete_projects(self, output_dir: Path) -> list[Path]:
+        """Return all project directories that lack a completed.json marker."""
+        if not output_dir.exists():
+            return []
+        incomplete = []
+        for entry in output_dir.iterdir():
+            if entry.is_dir() and not (entry / "completed.json").exists():
+                incomplete.append(entry)
+        return incomplete
+
+    def _write_completion_marker(self, project_dir: Path, notes: str = ""):
+        """Write completed.json to mark a project as fully scaffolded."""
+        (project_dir / "completed.json").write_text(json.dumps({
+            "completed_at": datetime.now().isoformat(),
+            "status": "complete",
+            "notes": notes,
+        }, indent=2))
+
+    async def _refine_project(self, project_dir: Path) -> Path:
+        """
+        Refine an incomplete project by generating any missing source files
+        and refreshing README and requirements. Marks complete when done.
+        """
+        brief_path = project_dir / "project_brief.json"
+        if not brief_path.exists():
+            print(f"  ⚠️  No project_brief.json in {project_dir.name} — cannot refine, skipping.")
+            return project_dir
+
+        with open(brief_path) as f:
+            brief = json.load(f)
+
+        print("\n" + "═" * 60)
+        print(f"  PROJECT BUILDER — Refining: {brief.get('title', project_dir.name)}")
+        print("═" * 60)
+        print(f"\n  📁 Project directory: {project_dir}\n")
+
+        files_to_generate = [
+            ("src/train.py",     "Main training loop. Loads data, initializes model, runs training, logs metrics."),
+            ("src/model.py",     "Model definition and architecture. Should be importable standalone."),
+            ("src/dataset.py",   "Dataset class and data loading utilities. Handle download, preprocessing, batching."),
+            ("src/evaluate.py",  "Evaluation script. Load a checkpoint and compute metrics on a test set."),
+            ("configs/config.yaml", "Training configuration: hyperparameters, paths, model settings."),
+        ]
+
+        missing = [(fp, role) for fp, role in files_to_generate
+                   if not (project_dir / fp).exists()]
+
+        if missing:
+            print(f"  ⚙️  Generating {len(missing)} missing source file(s)...")
+            async def gen(fp, role):
+                content = await self._generate_file(fp, brief, role)
+                return fp, content
+
+            results = await asyncio.gather(*[gen(fp, role) for fp, role in missing])
+            for filepath, content in results:
+                full_path = project_dir / filepath
+                full_path.parent.mkdir(parents=True, exist_ok=True)
+                full_path.write_text(content)
+                print(f"    ✅ {filepath} (generated)")
+        else:
+            print("  ✅ All source files present — refreshing README and requirements...")
+
+        # Always regenerate README and requirements during refinement
+        print("\n  📝 Regenerating README...")
+        readme = await self._generate_readme(brief)
+        (project_dir / "README.md").write_text(readme)
+        print("    ✅ README.md")
+
+        print("\n  📦 Regenerating requirements.txt...")
+        reqs = await self._generate_requirements(brief)
+        (project_dir / "requirements.txt").write_text(reqs)
+        print("    ✅ requirements.txt")
+
+        self._write_completion_marker(project_dir, notes="Completed via refinement pass")
+        print(f"\n  ✅ Refinement complete. Marked as complete: {project_dir}\n")
+        return project_dir
 
     async def _generate_file(self, filepath: str, brief: dict, file_role: str) -> str:
         """Ask Claude to generate the content of a specific project file."""
@@ -137,11 +238,17 @@ Key components: {json.dumps(brief['architecture']['key_components'])}
         """
         Scaffold the full project from a ProjectBrief.
 
+        Finish-before-starting: if any project in output_dir lacks a
+        completed.json marker, the builder refines the most recently modified
+        incomplete project instead of scaffolding a new one. Only when all
+        existing projects are complete does it create a fresh directory.
+
         Creates:
           data/projects/{slug}/
             README.md
             requirements.txt
             MILESTONES.md
+            completed.json   ← written when all files are present
             src/
               train.py
               model.py
@@ -156,6 +263,15 @@ Key components: {json.dumps(brief['architecture']['key_components'])}
 
         Returns the project directory path.
         """
+        # ── Finish-before-starting check ──────────────────────────────────────
+        incomplete = self._find_incomplete_projects(output_dir)
+        if incomplete:
+            most_recent = max(incomplete, key=lambda p: p.stat().st_mtime)
+            print(f"\n  ⚠️  Incomplete project found: {most_recent.name}")
+            print(f"     Refining existing project instead of starting a new one.")
+            print(f"     (Pass a new brief only after all projects are marked complete.)")
+            return await self._refine_project(most_recent)
+
         title = brief.get("title") or "project"
         base = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")[:28] or "project"
         digest = hashlib.sha256(title.encode("utf-8")).hexdigest()[:8]
@@ -237,6 +353,10 @@ Key components: {json.dumps(brief['architecture']['key_components'])}
         }
         (project_dir / "notebooks/01_exploration.ipynb").write_text(json.dumps(notebook_stub, indent=2))
         print("    ✅ notebooks/01_exploration.ipynb")
+
+        # Mark project as fully scaffolded
+        self._write_completion_marker(project_dir, notes="Initial scaffold complete")
+        print("    ✅ completed.json")
 
         # ── Handoff summary ───────────────────────────────────────────────────
         print(f"\n{'═'*60}")
