@@ -164,7 +164,23 @@ class StateStore:
             apps_by_status = dict(conn.execute("""
                 SELECT status, COUNT(*) FROM applications GROUP BY status
             """).fetchall())
-        return {"jobs_discovered": jobs_total, "applications": apps_by_status}
+            score_dist = dict(conn.execute("""
+                SELECT
+                    CASE
+                        WHEN score >= 90 THEN '90-100'
+                        WHEN score >= 70 THEN '70-89'
+                        WHEN score >= 50 THEN '50-69'
+                        ELSE '<50'
+                    END AS bucket,
+                    COUNT(*) AS n
+                FROM jobs
+                GROUP BY bucket
+            """).fetchall())
+        return {
+            "jobs_discovered": jobs_total,
+            "score_distribution": score_dist,
+            "applications": apps_by_status,
+        }
 
 
 if __name__ == "__main__":
