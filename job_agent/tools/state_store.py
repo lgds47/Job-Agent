@@ -1,16 +1,22 @@
 """
 State Store
 ===========
-SQLite-backed persistence layer for jobs, applications, and skill gap history.
+SQLite-backed persistence layer for jobs, applications, skill gaps,
+project-idea backlog, and run history.
 Single source of truth for the orchestrator across runs.
 """
 
 import json
 import sqlite3
+import hashlib
 from datetime import datetime
 from pathlib import Path
 
 DB_PATH = Path("data/job_agent.db")
+
+
+def _now_iso() -> str:
+    return datetime.now().isoformat()
 
 
 class StateStore:
@@ -51,16 +57,53 @@ class StateStore:
                     project_idea TEXT,
                     recorded_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS project_ideas (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    idea_key        TEXT UNIQUE NOT NULL,
+                    skill           TEXT,
+                    title           TEXT,
+                    status          TEXT DEFAULT 'not_started',
+                    option_json     TEXT NOT NULL,
+                    gap_json        TEXT,
+                    project_dir     TEXT,
+                    selected_count  INTEGER DEFAULT 0,
+                    created_at      TEXT,
+                    updated_at      TEXT,
+                    last_selected_at TEXT,
+                    run_source      TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS run_history (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    command             TEXT NOT NULL,
+                    status              TEXT NOT NULL,
+                    jobs_scored         INTEGER DEFAULT 0,
+                    early_exit_triggered INTEGER DEFAULT 0,
+                    claude_failures     INTEGER DEFAULT 0,
+                    metadata_json       TEXT,
+                    started_at          TEXT,
+                    finished_at         TEXT
+                );
             """)
 
     def _conn(self):
         return sqlite3.connect(self.db_path)
 
+    @staticmethod
+    def _loads_json_safe(value: str | None):
+        if not value:
+            return None
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return None
+
     # ── Jobs ──────────────────────────────────────────────────────────────────
 
     def save_jobs(self, jobs: list[dict]):
         """Upsert a list of scored job dicts."""
-        now = datetime.now().isoformat()
+        now = _now_iso()
         with self._conn() as conn:
             for job in jobs:
                 if not job.get("url"):
@@ -96,6 +139,32 @@ class StateStore:
             """, (min_score, n)).fetchall()
         return [json.loads(r[0]) for r in rows]
 
+    def get_all_jobs(self) -> list[dict]:
+        """Return all jobs with parsed metadata from raw_json."""
+        with self._conn() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT url, title, company, location, score, status, raw_json, discovered_at
+                FROM jobs
+                ORDER BY discovered_at DESC
+            """).fetchall()
+
+        jobs = []
+        for row in rows:
+            item = dict(row)
+            raw = self._loads_json_safe(item.get("raw_json")) or {}
+            item["metadata"] = {
+                "source": raw.get("source"),
+                "required_skills": raw.get("required_skills", []),
+                "preferred_skills": raw.get("preferred_skills", []),
+                "match_reasons": raw.get("match_reasons", []),
+                "gap_reasons": raw.get("gap_reasons", []),
+                "early_career_fit": raw.get("early_career_fit"),
+                "seniority_fit": raw.get("seniority_fit"),
+            }
+            jobs.append(item)
+        return jobs
+
     def update_job_status(self, url: str, status: str):
         with self._conn() as conn:
             conn.execute("UPDATE jobs SET status = ? WHERE url = ?", (status, url))
@@ -103,7 +172,7 @@ class StateStore:
     # ── Applications ──────────────────────────────────────────────────────────
 
     def save_application(self, job_url: str, app_dir: str):
-        now = datetime.now().isoformat()
+        now = _now_iso()
         with self._conn() as conn:
             conn.execute("""
                 INSERT INTO applications (job_url, app_dir, created_at)
@@ -122,11 +191,11 @@ class StateStore:
                     applied_at = CASE WHEN ? = 'applied' THEN ? ELSE applied_at END,
                     notes = COALESCE(?, notes)
                 WHERE job_url = ?
-            """, (status, status, datetime.now().isoformat(), notes, job_url))
+            """, (status, status, _now_iso(), notes, job_url))
 
     def get_applications(self, status: str = None) -> list[dict]:
         query = "SELECT * FROM applications"
-        params = ()
+        params: tuple = ()
         if status:
             query += " WHERE status = ?"
             params = (status,)
@@ -139,7 +208,7 @@ class StateStore:
     # ── Skill Gaps ────────────────────────────────────────────────────────────
 
     def save_skill_gaps(self, gaps: list[dict]):
-        now = datetime.now().isoformat()
+        now = _now_iso()
         with self._conn() as conn:
             conn.execute("DELETE FROM skill_gaps")  # replace with latest analysis
             for gap in gaps:
@@ -154,6 +223,224 @@ class StateStore:
             rows = conn.execute(
                 "SELECT * FROM skill_gaps ORDER BY frequency DESC"
             ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Project Ideas ─────────────────────────────────────────────────────────
+
+    def save_project_ideas(self, gap: dict, options: list[dict], run_source: str | None = None) -> int:
+        """Upsert planner-generated options as project ideas."""
+        now = _now_iso()
+        skill = str(gap.get("skill") or "").strip()
+        gap_json = json.dumps(gap)
+        saved = 0
+
+        with self._conn() as conn:
+            for opt in options:
+                if not isinstance(opt, dict):
+                    continue
+                title = str(opt.get("title") or "").strip() or "Untitled project idea"
+                key_seed = f"{skill.lower()}::{title.lower()}::{opt.get('elevator_pitch', '')}"
+                idea_key = hashlib.sha256(key_seed.encode("utf-8")).hexdigest()[:16]
+                conn.execute("""
+                    INSERT INTO project_ideas (
+                        idea_key, skill, title, status, option_json, gap_json,
+                        created_at, updated_at, run_source
+                    )
+                    VALUES (?, ?, ?, 'not_started', ?, ?, ?, ?, ?)
+                    ON CONFLICT(idea_key) DO UPDATE SET
+                        skill = excluded.skill,
+                        title = excluded.title,
+                        option_json = excluded.option_json,
+                        gap_json = excluded.gap_json,
+                        updated_at = excluded.updated_at,
+                        run_source = excluded.run_source
+                """, (
+                    idea_key, skill, title, json.dumps(opt), gap_json, now, now, run_source
+                ))
+                saved += 1
+        return saved
+
+    def get_project_ideas(self, include_completed: bool = True) -> list[dict]:
+        # FIFO ordering at list time mirrors pick_next_project_idea / peek_next_project_idea:
+        # oldest pending first within each status group.
+        query = "SELECT * FROM project_ideas"
+        if not include_completed:
+            query += " WHERE status != 'completed'"
+        query += " ORDER BY created_at ASC, id ASC"
+        with self._conn() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(query).fetchall()
+
+        ideas = []
+        for row in rows:
+            item = dict(row)
+            item["option"] = self._loads_json_safe(item.get("option_json")) or {}
+            item["gap"] = self._loads_json_safe(item.get("gap_json")) or {}
+            ideas.append(item)
+        return ideas
+
+    def pick_next_project_idea(self) -> dict | None:
+        """
+        Pick one idea for the next builder handoff. Mutates: increments
+        ``selected_count`` and stamps ``last_selected_at``/``updated_at`` on
+        the picked row.
+
+        Preference order: not_started -> in_progress -> everything else
+        (except completed). Within each group, oldest-pending-first (FIFO)
+        by ``created_at`` ASC then ``id`` ASC.
+        """
+        with self._conn() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("""
+                SELECT *
+                FROM project_ideas
+                WHERE status != 'completed'
+                ORDER BY
+                    CASE status
+                        WHEN 'not_started' THEN 0
+                        WHEN 'in_progress' THEN 1
+                        ELSE 2
+                    END,
+                    created_at ASC,
+                    id ASC
+                LIMIT 1
+            """).fetchone()
+            if not row:
+                return None
+
+            now = _now_iso()
+            conn.execute("""
+                UPDATE project_ideas
+                SET selected_count = selected_count + 1,
+                    last_selected_at = ?,
+                    updated_at = ?
+                WHERE idea_key = ?
+            """, (now, now, row["idea_key"]))
+
+            picked = dict(row)
+            picked["selected_count"] = int(picked.get("selected_count") or 0) + 1
+            picked["last_selected_at"] = now
+            picked["option"] = self._loads_json_safe(picked.get("option_json")) or {}
+            picked["gap"] = self._loads_json_safe(picked.get("gap_json")) or {}
+            return picked
+
+    def peek_next_project_idea(self) -> dict | None:
+        """Preview the next idea without mutating selection counters.
+
+        Genuinely read-only: no UPDATE or INSERT statements execute. Useful
+        for the orchestrator's status preview when --build is not set.
+        """
+        with self._conn() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("""
+                SELECT *
+                FROM project_ideas
+                WHERE status != 'completed'
+                ORDER BY
+                    CASE status
+                        WHEN 'not_started' THEN 0
+                        WHEN 'in_progress' THEN 1
+                        ELSE 2
+                    END,
+                    created_at ASC,
+                    id ASC
+                LIMIT 1
+            """).fetchone()
+            if not row:
+                return None
+            preview = dict(row)
+            preview["option"] = self._loads_json_safe(preview.get("option_json")) or {}
+            preview["gap"] = self._loads_json_safe(preview.get("gap_json")) or {}
+            return preview
+
+    def update_project_idea_status(self, idea_key: str, status: str, project_dir: str | None = None):
+        now = _now_iso()
+        with self._conn() as conn:
+            if project_dir:
+                conn.execute("""
+                    UPDATE project_ideas
+                    SET status = ?, project_dir = ?, updated_at = ?
+                    WHERE idea_key = ?
+                """, (status, project_dir, now, idea_key))
+            else:
+                conn.execute("""
+                    UPDATE project_ideas
+                    SET status = ?, updated_at = ?
+                    WHERE idea_key = ?
+                """, (status, now, idea_key))
+
+    # ── Run History ───────────────────────────────────────────────────────────
+
+    def record_run(
+        self,
+        command: str,
+        status: str,
+        jobs_scored: int = 0,
+        early_exit_triggered: bool = False,
+        claude_failures: int = 0,
+        metadata: dict | None = None,
+        started_at: str | None = None,
+        finished_at: str | None = None,
+    ):
+        """Insert one row into ``run_history``.
+
+        Callers SHOULD pass real ``started_at`` and ``finished_at`` ISO
+        timestamps — ``started_at`` captured at the start of the command,
+        ``finished_at`` captured at completion. The orchestrator does this.
+
+        If a timestamp is omitted, ``datetime.now()`` is used as a fallback
+        so older callers do not break, but the two fallbacks are evaluated
+        at the same instant — pass real values to avoid losing run duration.
+        """
+        fallback = _now_iso()
+        with self._conn() as conn:
+            conn.execute("""
+                INSERT INTO run_history (
+                    command, status, jobs_scored, early_exit_triggered, claude_failures,
+                    metadata_json, started_at, finished_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                command,
+                status,
+                int(jobs_scored or 0),
+                1 if early_exit_triggered else 0,
+                int(claude_failures or 0),
+                json.dumps(metadata or {}),
+                started_at or fallback,
+                finished_at or fallback,
+            ))
+
+    def get_run_history(self, limit: int = 100) -> list[dict]:
+        with self._conn() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT *
+                FROM run_history
+                ORDER BY finished_at DESC, id DESC
+                LIMIT ?
+            """, (limit,)).fetchall()
+        history = []
+        for row in rows:
+            item = dict(row)
+            item["metadata"] = self._loads_json_safe(item.get("metadata_json")) or {}
+            history.append(item)
+        return history
+
+    def get_run_history_summary(self) -> list[dict]:
+        with self._conn() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT
+                    command,
+                    COUNT(*) AS runs,
+                    SUM(jobs_scored) AS jobs_scored,
+                    SUM(early_exit_triggered) AS early_exits,
+                    SUM(claude_failures) AS claude_failures
+                FROM run_history
+                GROUP BY command
+                ORDER BY command ASC
+            """).fetchall()
         return [dict(r) for r in rows]
 
     # ── Summary ───────────────────────────────────────────────────────────────
