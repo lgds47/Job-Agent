@@ -51,6 +51,31 @@ class StateStore:
                     project_idea TEXT,
                     recorded_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS project_ideas (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    gap_skill   TEXT,
+                    title       TEXT,
+                    option_json TEXT,
+                    gap_json    TEXT,
+                    status      TEXT DEFAULT 'pending',
+                    project_dir TEXT,
+                    created_at  TEXT,
+                    updated_at  TEXT,
+                    UNIQUE (gap_skill, title)
+                );
+
+                CREATE TABLE IF NOT EXISTS run_history (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    command         TEXT NOT NULL,
+                    started_at      TEXT,
+                    ended_at        TEXT,
+                    status          TEXT DEFAULT 'running',
+                    jobs_scored     INTEGER DEFAULT 0,
+                    early_exits     INTEGER DEFAULT 0,
+                    claude_failures INTEGER DEFAULT 0,
+                    notes           TEXT
+                );
             """)
 
     def _conn(self):
@@ -155,6 +180,162 @@ class StateStore:
                 "SELECT * FROM skill_gaps ORDER BY frequency DESC"
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── Project Ideas ─────────────────────────────────────────────────────────
+
+    def save_project_ideas(self, gap: dict, options: list[dict]) -> int:
+        """Insert each planner-generated option as a pending project idea.
+        Existing (gap_skill, title) rows are preserved untouched so we never
+        clobber a pending or completed idea. Returns the number of new rows.
+        """
+        now = datetime.now().isoformat()
+        gap_skill = (gap.get("skill") or "").strip()
+        gap_blob = json.dumps(gap)
+        inserted = 0
+        with self._conn() as conn:
+            for opt in options or []:
+                if not isinstance(opt, dict):
+                    continue
+                title = (opt.get("title") or "").strip()
+                if not title:
+                    continue
+                cur = conn.execute(
+                    """
+                    INSERT INTO project_ideas
+                        (gap_skill, title, option_json, gap_json, status, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 'pending', ?, ?)
+                    ON CONFLICT (gap_skill, title) DO NOTHING
+                    """,
+                    (gap_skill, title, json.dumps(opt), gap_blob, now, now),
+                )
+                if cur.rowcount:
+                    inserted += 1
+        return inserted
+
+    def get_pending_project_idea(self) -> dict | None:
+        """Return the most recently created pending idea (or None)."""
+        with self._conn() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT * FROM project_ideas
+                WHERE status = 'pending'
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_project_ideas(self, status: str | None = None) -> list[dict]:
+        with self._conn() as conn:
+            conn.row_factory = sqlite3.Row
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM project_ideas WHERE status = ? ORDER BY created_at DESC",
+                    (status,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM project_ideas ORDER BY created_at DESC"
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_project_idea(
+        self,
+        idea_id: int,
+        status: str,
+        project_dir: str | None = None,
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE project_ideas
+                SET status = ?,
+                    project_dir = COALESCE(?, project_dir),
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (status, project_dir, datetime.now().isoformat(), idea_id),
+            )
+
+    # ── Run History ───────────────────────────────────────────────────────────
+
+    def start_run(self, command: str) -> int:
+        with self._conn() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO run_history (command, started_at, status)
+                VALUES (?, ?, 'running')
+                """,
+                (command, datetime.now().isoformat()),
+            )
+            return int(cur.lastrowid)
+
+    def end_run(
+        self,
+        run_id: int,
+        status: str = "ok",
+        jobs_scored: int = 0,
+        early_exits: int = 0,
+        claude_failures: int = 0,
+        notes: str | None = None,
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE run_history
+                SET ended_at = ?,
+                    status = ?,
+                    jobs_scored = ?,
+                    early_exits = ?,
+                    claude_failures = ?,
+                    notes = ?
+                WHERE id = ?
+                """,
+                (
+                    datetime.now().isoformat(),
+                    status,
+                    int(jobs_scored or 0),
+                    int(early_exits or 0),
+                    int(claude_failures or 0),
+                    notes,
+                    run_id,
+                ),
+            )
+
+    def get_run_history(self, n: int = 20) -> list[dict]:
+        with self._conn() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM run_history ORDER BY started_at DESC LIMIT ?",
+                (n,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_all_jobs(self) -> list[dict]:
+        """Return all jobs, most-recently-discovered first, with their raw payloads merged."""
+        with self._conn() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT url, title, company, location, score, status,
+                       raw_json, discovered_at
+                FROM jobs
+                ORDER BY discovered_at DESC
+                """
+            ).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            row = dict(r)
+            try:
+                raw = json.loads(row.pop("raw_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                raw = {}
+            # Top-level row fields win over raw_json copies, so the canonical
+            # discovered_at/score from the column is what callers see.
+            merged = {**raw, **{k: v for k, v in row.items() if v is not None}}
+            out.append(merged)
+        return out
 
     # ── Summary ───────────────────────────────────────────────────────────────
 
