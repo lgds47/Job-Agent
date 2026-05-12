@@ -45,7 +45,7 @@ Do not edit source to fake flags. For API-free checks, test local modules direct
 |---|---|---|
 | CLI/orchestrator | `python orchestrator.py --help` | With key + resume, `python orchestrator.py apply --url "<real job URL>"` and verify `data/applications/YYYYMMDD_company_role/{jd.json,tailored_resume.json,cover_letter.md,meta.json}` |
 | Search agent | `python orchestrator.py search --help` | `python orchestrator.py search`; expect Claude discovery, ATS fetches, scoring, and SQLite job rows. If discovery JSON truncates, prefer `apply --url` for E2E validation |
-| Gap planner/builder | `python orchestrator.py gaps` should print "No jobs in state store yet" on a fresh DB | After search or seeded jobs, run `python orchestrator.py gaps`; add `--build` only when project scaffolding should be created under `data/projects/` |
+| Gap planner/builder | `python orchestrator.py gaps --help`; without the gitignored resume JSON, `gaps` fails before DB checks | With resume present and a fresh DB, `python orchestrator.py gaps` should print "No jobs in state store yet"; after search or seeded jobs, add `--build` only when project scaffolding should be created under `data/projects/` |
 | Local tools | Run `python -c "from tools.state_store import StateStore; print(StateStore().summary())"` | Exercise focused snippets for `tools.llm_json.loads_llm_json`, `tools.text_sanitize.strip_code_fences`, and SQLite CRUD; these do not need Claude |
 | JD parser/LLM agents | Import with `ANTHROPIC_API_KEY=dummy python -c "from tools.jd_parser import parse_jd; from agents.resume_agent import ResumeAgent"` | Use `apply --url`; it fetches a real posting, parses it with Claude, runs resume and cover-letter agents, and saves outputs |
 
@@ -53,7 +53,7 @@ Do not edit source to fake flags. For API-free checks, test local modules direct
 
 1. `cd /workspace/job_agent && source .venv/bin/activate` for every run.
 2. If `.venv` is missing, recreate it and install `requirements.txt`.
-3. Confirm `ANTHROPIC_API_KEY` and `data/luke_ganalon_resume.json` exist before testing LLM flows.
+3. Confirm `ANTHROPIC_API_KEY` and `data/luke_ganalon_resume.json` exist before testing LLM flows or `gaps`.
 4. Prefer `apply --url` for reliable full-pipeline testing; `search` can fail from model JSON truncation, and `search --company` still performs discovery first.
 5. Treat generated `data/` outputs as test artifacts unless the user asks to preserve them.
 
