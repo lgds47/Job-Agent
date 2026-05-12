@@ -25,7 +25,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 # or create /workspace/job_agent/.env containing ANTHROPIC_API_KEY=...
 ```
 
-Never commit `.env`, `.github_token`, `data/job_agent.db`, generated applications, or `data/luke_ganalon_resume.json`; they are ignored because they contain secrets, state, or PII. Full LLM runs also require a user-supplied `data/luke_ganalon_resume.json` with `contact`, `summary.text`, `agent_metadata.target_roles`, `skills`, `experience[].bullets[].id`, `education`, and `certifications`.
+Never commit `.env`, `.github_token`, `*.db`, generated applications, or `data/luke_ganalon_resume.json`; they contain secrets, state, or PII. The resume and DB are ignored, but `job_agent/data/applications/` may still appear in `git status`, so remove or leave it unstaged unless the user explicitly asks to keep outputs. Full LLM runs also require a user-supplied `data/luke_ganalon_resume.json` with `contact`, `summary.text`, `agent_metadata.target_roles`, `skills`, `experience[].bullets[].id`, `education`, and `certifications`.
 
 ## Feature flags and configuration
 
@@ -39,7 +39,7 @@ There are no feature-flag services to log into or mock. Core orchestrator behavi
 
 Do not edit source to fake flags. For API-free checks, test local modules directly or set `ANTHROPIC_API_KEY=dummy` only for import smoke tests that do not call Claude.
 
-`push_github.py` is outside the core orchestrator flow; it separately reads `GITHUB_TOKEN` or `.github_token` only when that script is run.
+`push_github.py` is outside the core orchestrator flow; it separately reads `GITHUB_TOKEN` or `.github_token` only when that script is run, and its upload map includes the resume JSON. Do not run it unless the user explicitly wants that sync and understands the PII exposure.
 
 ## Testing workflows by codebase area
 
