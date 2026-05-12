@@ -46,6 +46,17 @@ Rules:
 - Use best practices for the stack specified.
 - Keep files focused — one responsibility per file.
 - Return ONLY the file content, no preamble, no markdown fences.
+- Write scripts, not notebooks. Every deliverable should be a .py file
+  runnable from the command line — this makes it deployable, testable,
+  and reproducible in containerized environments.
+- Structure projects for deployment: include a Dockerfile or
+  docker-compose.yml where appropriate, use argparse or a config file
+  (not hardcoded values), and separate concerns so components can run
+  independently in a container or Kubernetes pod.
+- Instrument code for observability: include MLflow tracking calls
+  (log_metric, log_param, log_artifact) where training, evaluation, or
+  inference occurs — even if the values are placeholder, the structure
+  should be there.
 """
 
 README_SYSTEM = """You are a technical writer creating a professional README
@@ -58,6 +69,12 @@ Rules:
 - Include a "Key learnings" or "Technical decisions" section — this shows depth
 - Keep it under 500 words
 - Return only the README content, no preamble
+- Include a deployment section: how to build the Docker image, run the
+  container, and what environment variables or config the project expects.
+  This signals production awareness to hiring managers.
+- If MLflow or another tracking tool is used, mention it explicitly and
+  show the command to launch the tracking UI — reproducibility and
+  measurement are selling points.
 """
 
 
