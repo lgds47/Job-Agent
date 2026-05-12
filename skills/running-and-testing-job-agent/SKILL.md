@@ -9,13 +9,19 @@ description: Use when starting work in this job-search pipeline codebase, before
 
 Python CLI — no server, no Docker. Entry point: `job_agent/orchestrator.py`. Three subcommands: `search`, `apply`, `gaps`. All LLM calls use `claude-sonnet-4-5` via `ANTHROPIC_API_KEY`.
 
-## Environment Setup
+## Required Setup (Every Cloud Session)
 
 ```bash
 cd /workspace/job_agent
 source .venv/bin/activate
 # API key: set ANTHROPIC_API_KEY env var OR create job_agent/.env with ANTHROPIC_API_KEY=sk-...
 ```
+
+Run these three checks in order after activation:
+
+1. `python --version` — expect `3.10+`; if lower, the venv is pointed at the wrong interpreter.
+2. `python -c "import os; print(bool(os.getenv('ANTHROPIC_API_KEY')))"` — `True`: full pipeline available; `False`: use local-only workflows (no Claude calls).
+3. `python -c "from pathlib import Path; print(Path('data/luke_ganalon_resume.json').exists())"` — must be `True` for any agent flow; if `False`, drop in the mock JSON from the Mocking section below.
 
 **Resume JSON** is required at `job_agent/data/luke_ganalon_resume.json` (gitignored, contains PII).  
 Required schema fields: `contact.name/title`, `summary.text`, `agent_metadata.target_roles[]`,  
@@ -85,6 +91,39 @@ python orchestrator.py gaps --build    # gap analysis + auto-scaffold Option 1 p
 | `ResumeAgent bullet ranking failed` | Bullet `id` fields missing or duplicated | Fix `id` fields in resume JSON |
 | `No jobs in state store yet` on `gaps` | `search` hasn't run yet | Run `search` first or seed DB manually |
 | `⚠️ No target_roles set` on `search` | Missing `agent_metadata.target_roles` in resume JSON | Add role list to resume JSON |
+
+## Mocking
+
+When `data/luke_ganalon_resume.json` is absent (fresh clone, CI, no PII available), create a minimal stub that satisfies the full schema:
+
+```bash
+mkdir -p data
+cat > data/luke_ganalon_resume.json << 'EOF'
+{
+  "contact": {"name": "Test User", "title": "ML Engineer"},
+  "summary": {"text": "ML engineer with experience in model training and deployment."},
+  "agent_metadata": {"target_roles": ["ML Engineer", "MLOps Engineer"]},
+  "skills": {
+    "ml": {"label": "Machine Learning", "items": ["Python", "PyTorch", "scikit-learn"]}
+  },
+  "experience": [
+    {
+      "company": "ACME Corp",
+      "title": "ML Engineer",
+      "current": true,
+      "bullets": [
+        {"id": "b_001_1", "text": "Trained and deployed CV models reducing latency 40%.", "skills": ["PyTorch"]},
+        {"id": "b_001_2", "text": "Built data pipelines processing 10M records/day.", "skills": ["Python"]}
+      ]
+    }
+  ],
+  "education": [{"institution": "State University", "degree": "BS", "field": "Computer Science"}],
+  "certifications": [{"name": "AWS ML Specialty"}]
+}
+EOF
+```
+
+Sufficient for `apply --url` end-to-end tests. Do not commit — `data/` is gitignored.
 
 ## Updating This Skill
 
