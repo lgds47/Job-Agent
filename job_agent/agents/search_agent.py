@@ -62,14 +62,33 @@ SCORING_BATCH_SIZE = 5
 DISCOVERY_SYSTEM = """You are a technical recruiter and ML industry analyst.
 
 Given a candidate profile and target roles, identify 15-20 companies that are:
+
 1. Actively hiring for those roles RIGHT NOW (not hypothetically)
-2. Strong fits for an early-career ML engineer (0-3 years experience):
+
+2. Genuinely accessible to an early-career ML engineer (1-2 years experience):
    - Real ML infrastructure, not just ML as a peripheral feature
-   - Engineering-driven culture with mentorship norms
-   - Clear growth path for junior/associate engineers
-   - Well-funded or profitable (not at imminent shutdown risk)
-3. Diverse across size and stage (startups to large tech)
-4. Recognizable on a resume — name-brand value matters early-career
+   - Engineering-driven culture with documented mentorship or structured onboarding
+   - Multiple seniority levels visible in current job postings (signals real growth path,
+     not just a one-time junior hire)
+   - Well-funded or profitable (Series B+ or public, not pre-revenue)
+   - Interview process that weights demonstrated project work and portfolio,
+     not exclusively competitive leetcode or research publications
+
+3. Realistically competitive for this candidate — avoid:
+   - Companies where the effective bar is 3+ years despite "junior" titles
+     (e.g. Anthropic, OpenAI, Ramp, Stripe at the ML level)
+   - Companies that primarily hire from a small set of target universities
+     or require PhD-level ML research backgrounds
+   - Roles where the candidate would be the ONLY ML engineer (no mentorship structure)
+
+4. Diverse across size and stage (startups to large tech), with a bias toward:
+   - Series B through public companies with established ML teams (5-30 ML engineers)
+   - Companies in applied ML, MLOps tooling, or AI-enabled SaaS
+     (not pure research labs)
+   - SoCal-based or strong remote culture (candidate is in Costa Mesa, CA)
+
+5. Resume-competitive name recognition — the company should strengthen a resume
+   without requiring an unrealistic bar to enter
 
 For each company, identify which ATS they use so we can fetch jobs directly.
 Most companies use one of: greenhouse, lever, ashby, workday, custom.
@@ -81,16 +100,23 @@ Return ONLY a JSON array, no markdown fences:
     "ats": "greenhouse | lever | ashby | workday | custom",
     "slug": "their-ats-slug-if-known-else-null",
     "career_url": "https://company.com/careers",
-    "why_good_fit": "one sentence — specific reason good for early-career ML",
+    "why_good_fit": "one sentence — specific reason this is accessible AND valuable for an early-career ML engineer with a production background",
     "ml_maturity": "core | growing | adjacent",
-    "stage": "startup | growth | public | large-tech"
+    "stage": "startup | growth | public | large-tech",
+    "accessibility": "high | medium | low",
+    "accessibility_reason": "one sentence explaining why this company is or isn't realistically competitive at 1-2 yrs exp"
   }
 ]
 
 ml_maturity:
-  core     = ML is the product (Anthropic, HuggingFace, W&B, Scale AI)
-  growing  = significant ML investment, expanding teams (Notion, Figma, Stripe)
+  core     = ML is the product (Weights & Biases, Scale AI, Cohere, Modal)
+  growing  = significant ML investment, expanding teams (Notion, Rippling, Faire)
   adjacent = uses ML but not primarily an ML company
+
+accessibility:
+  high   = actively builds junior pipelines, portfolio-friendly hiring, structured onboarding
+  medium = competitive but not unreachable with strong project work
+  low    = effectively requires 3+ years or elite pedigree despite title
 """
 
 ATS_DETECT_SYSTEM = """You are a technical recruiter. Given a company name,
