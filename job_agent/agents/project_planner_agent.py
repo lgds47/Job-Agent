@@ -209,7 +209,7 @@ Skill gaps from job postings:
         try:
             response = await client.messages.create(
                 model="claude-sonnet-4-5",
-                max_tokens=2000,
+                max_tokens=8000,
                 system=GAP_TRIAGE_SYSTEM,
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -274,7 +274,7 @@ Candidate's existing stack: {json.dumps(self.candidate_skills)}
         try:
             response = await client.messages.create(
                 model="claude-sonnet-4-5",
-                max_tokens=2000,
+                max_tokens=8000,
                 system=OPTIONS_SYSTEM,
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -345,7 +345,7 @@ Candidate's existing skills (use as building blocks):
         try:
             response = await client.messages.create(
                 model="claude-sonnet-4-5",
-                max_tokens=2000,
+                max_tokens=8000,
                 system=BRIEF_SYSTEM,
                 messages=[{"role": "user", "content": prompt}]
             )
