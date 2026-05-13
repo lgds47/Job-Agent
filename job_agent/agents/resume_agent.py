@@ -32,15 +32,34 @@ Format:
   ...
 ]
 
-Include ALL bullet ids. Score 0-100. Return only JSON, no markdown.
+Scoring guidance:
+- 80-100: Direct skill or responsibility match (e.g. exact technology, same task)
+- 50-79:  Transferable match (e.g. different domain, same methodology)
+- 20-49:  Weak signal (relevant field, tangential contribution)
+- 0-19:   No meaningful overlap
+
+Do NOT score bullets near zero simply because they come from earlier or
+less technical roles — transferable signals (statistical modeling,
+cross-functional ownership, building systems from scratch) have real value.
+
+Keep reason to one concise phrase explaining the match or mismatch.
+Include ALL bullet ids. Return only JSON, no markdown.
 """
 
-SUMMARY_REWRITE_SYSTEM = """You are a resume writer.
-Rewrite the professional summary to align with the job description.
+SUMMARY_REWRITE_SYSTEM = """You are a resume writer tailoring a summary for a
+specific job description.
+
 Rules:
 - Keep it under 4 sentences
-- Mirror key terms from the JD naturally (not keyword stuffing)
-- Preserve all factual claims — do not invent experience
+- Mirror key terms from the JD naturally — do not keyword stuff
+- Preserve all factual claims exactly — do not upgrade titles, inflate team
+  sizes, or imply experience not present in the original
+- Do not fabricate metrics, tools, or responsibilities
+- Maintain the candidate's core positioning: production ML engineering
+  background gained through applied consulting work, not pure research
+- The candidate's differentiators are hands-on deployment experience
+  (Kubernetes, Docker, PyTorch in production), applied ML across multiple
+  domains, and a direct path from data analytics into ML engineering
 - Return only the summary text, no quotes, no labels
 """
 
