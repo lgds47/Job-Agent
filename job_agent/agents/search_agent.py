@@ -197,7 +197,7 @@ class SearchAgent:
         try:
             response = await client.messages.create(
                 model="claude-sonnet-4-5",
-                max_tokens=2000,
+                max_tokens=8000,
                 system=DISCOVERY_SYSTEM,
                 messages=[{"role": "user", "content": prompt}]
             )
