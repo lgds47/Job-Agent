@@ -75,25 +75,51 @@ REQUIRED_SOURCE_FILES: dict[str, str] = {
 CODE_GEN_SYSTEM = """You are a senior ML engineer writing clean, well-commented
 starter code for a junior engineer's portfolio project.
 
+Candidate's default stack preferences:
+- Modular structure — separate files for model, dataset, training loop, evaluation
+- Production-aware patterns: config files over hardcoded values, argparse or
+  hydra for CLI args, logging over print statements where appropriate
+- Code should reflect someone who has shipped production systems, not just
+  run notebooks
+
 Rules:
 - Write substantive code — not empty stubs. Include real imports, real structure.
 - Add inline comments that explain WHY, not just what (the code shows what).
-- Include TODO markers for the parts the engineer needs to implement themselves
-  — this is a learning project, not a complete solution.
-- Use best practices for the stack specified.
-- Keep files focused — one responsibility per file.
-- Return ONLY the file content, no preamble, no markdown fences.
+- TODO markers should target the core learning objective of the file:
+  - train.py: leave the training loop body and metric logging as TODOs
+  - model.py: leave the forward pass implementation as a TODO
+  - dataset.py: leave the preprocessing and augmentation logic as TODOs
+  - evaluate.py: leave the metric computation as a TODO
+  - Other files: use judgment — scaffold the structure, TODO the substance
+- Use best practices for the stack specified in the brief
+- Keep files focused — one responsibility per file
+- Return ONLY the file content, no preamble, no markdown fences
 """
 
 README_SYSTEM = """You are a technical writer creating a professional README
-for a portfolio project. This README will be seen by ML hiring managers.
+for a portfolio project. This README will be read by ML hiring managers
+evaluating an early-career engineer.
+
+What hiring managers look for at this level:
+- Evidence of genuine problem engagement, not tutorial-following
+- Understanding of WHY architectural choices were made
+- Honest reporting of results, including limitations
+- Clean, reproducible setup that actually works
+
+Required sections in this order:
+1. Project title + one-line description of what it demonstrates
+2. Motivation — why this problem, why this approach (2-3 sentences, first person)
+3. Technical approach — what you built and the key architectural decisions
+4. Results — metrics with context; use placeholders like [TO BE UPDATED] if not yet run
+5. Technical decisions — 2-3 bullet points explaining WHY you made specific
+   choices (framework, architecture, dataset). This is the most important section.
+6. Setup — genuinely easy to follow, assumes a clean Python environment
+7. Next steps — honest about what would make this production-ready
 
 Rules:
-- Lead with what the project demonstrates, not just what it does
-- Include a results/metrics section (with placeholders if not yet run)
-- Make setup genuinely easy to follow
-- Include a "Key learnings" or "Technical decisions" section — this shows depth
-- Keep it under 500 words
+- Under 500 words
+- Write in first person — this is the candidate's project
+- Do not use marketing language or oversell results
 - Return only the README content, no preamble
 """
 
@@ -193,8 +219,7 @@ Key components: {json.dumps(brief['architecture']['key_components'])}
         response = await client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=300,
-            system="Return only a requirements.txt file content. Pin reasonable versions. No comments, no markdown.",
-            messages=[{"role": "user", "content": f"Generate requirements.txt for: {core + optional}"}]
+            system="Return only a requirements.txt file content. Pin to recent stable versions as of 2024-2025. No comments, no markdown fences.",            messages=[{"role": "user", "content": f"Generate requirements.txt for: {core + optional}"}]
         )
         return strip_code_fences(response.content[0].text)
 
