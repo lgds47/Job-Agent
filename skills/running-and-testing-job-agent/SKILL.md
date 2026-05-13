@@ -62,7 +62,7 @@ python -c "from agents.project_planner_agent import ProjectPlannerAgent; print('
 python -c "from agents.project_builder_agent import ProjectBuilderAgent; print('OK')"
 ```
 
-**End-to-end test** (`apply` is the most reliable — no discovery step, no truncation risk):
+**End-to-end test** (`apply` is the most reliable — no discovery step, no LLM-response sizing risk):
 
 ```bash
 python orchestrator.py apply --url "https://jobs.lever.co/anthropic/SOME-JOB-ID"
@@ -116,8 +116,8 @@ Every refine pass — including the no-brief and corrupt-brief shortcuts (which 
 | `python orchestrator.py status --format json -o /tmp/status.json` | no | structured JSON written to file |
 | `python orchestrator.py status --format html` | no | standalone HTML (stdout) |
 | `python orchestrator.py status --format html -o /tmp/status.html` | no | standalone HTML written to file |
-| `python orchestrator.py search` | yes | discovery + scoring (early-exit after 7 consecutive scores < 50; truncation gotcha still applies) |
-| `python orchestrator.py search --company "Glean" "Cohere"` | yes | append ad-hoc companies after discovery |
+| `python orchestrator.py search` | yes | discovery + scoring (early-exit after 7 consecutive scores < 50) |
+| `python orchestrator.py search --company "Glean" "Cohere"` | yes | append ad-hoc companies *after* discovery returns; if discovery aborts the run, the ad-hoc list is never reached |
 | `python orchestrator.py apply --url "<job-url>"` | yes | JD parse + tailored resume + cover letter package |
 | `python orchestrator.py gaps` | yes | gap analysis — requires jobs already in DB (uses `min_score=35`) |
 | `python orchestrator.py gaps --build` | yes | pass **one** stored project idea to the builder; builder refines any incomplete project first |
@@ -140,7 +140,7 @@ Every refine pass — including the no-brief and corrupt-brief shortcuts (which 
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `❌ Failed to parse company discovery JSON` | `search` discovery truncated at max_tokens=2000 | Use `apply --url` instead |
+| `❌ Failed to parse company discovery JSON` | `_discover_companies` Claude response is malformed or was truncated (e.g. `max_tokens` reverted below 8000) | Confirm `agents/search_agent.py::_discover_companies` still uses `max_tokens=8000`; if response is short but invalid, inspect the JSON tail in stdout for the parse error pos |
 | `FileNotFoundError: data/luke_ganalon_resume.json` | Resume JSON not present | Create it from the schema above |
 | `AuthenticationError` or missing key message | `ANTHROPIC_API_KEY` not set | Add `job_agent/.env` or export the var |
 | `ResumeAgent bullet ranking failed` | Bullet `id` fields missing or duplicated | Fix `id` fields in resume JSON |

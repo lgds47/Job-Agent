@@ -91,9 +91,9 @@ A structured resume file at `job_agent/data/luke_ganalon_resume.json` is require
 
 ### Gotchas
 
-- The `search` command's discovery step requests 15-20 companies but the LLM max_tokens is 2000, which can cause JSON truncation. If discovery fails, use `apply --url` instead for reliable end-to-end testing.
+- The `search` command's discovery step requests 15-20 companies. The discovery Claude call uses `max_tokens=8000` (in `agents/search_agent.py::_discover_companies`), comfortably above the ~6 KB JSON that prompt empirically produces. Earlier the cap was `2000` and the JSON would truncate mid-string — if you ever see `❌ Failed to parse company discovery JSON` again, the first thing to check is whether that cap has been lowered back.
+- `search --company` merges ad-hoc companies *after* `_discover_companies` returns. If discovery itself returns `[]` for any reason (Claude error, parse failure), the entire run aborts before the ad-hoc list is processed — the override does not bypass discovery.
 - The `apply` command is the best end-to-end test: it exercises the JD parser (real HTTP fetch), ResumeAgent (bullet ranking + summary rewrite), and CoverLetterAgent (generation) in parallel, with no discovery dependency.
-- `search --company` still runs the full discovery step first; ad-hoc companies are merged after discovery succeeds.
 
 ### Local components that work without API key
 
