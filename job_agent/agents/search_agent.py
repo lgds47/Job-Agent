@@ -18,6 +18,19 @@ ATS support: Greenhouse, Lever, Ashby (all have public JSON APIs).
              Workday and custom career pages scraped + Claude-parsed.
 
 Scoring: Claude rates each JD 0-100 with early-career fit awareness.
+
+Early-exit guardrail
+--------------------
+The scoring loop is failure-aware: a consecutive low-score streak halts
+further scoring, but Claude API failures during scoring do NOT advance the
+streak counter (they are tracked separately via ``claude_failures``). The
+two knobs are exposed as module-level constants AND as optional constructor
+parameters so callers/tests can override them without monkey-patching:
+
+  - ``EARLY_EXIT_CONSECUTIVE_LOW`` (default ``7``): how many consecutive
+    sub-threshold scores trigger early exit.
+  - ``EARLY_EXIT_SCORE_THRESHOLD`` (default ``50``): a score strictly below
+    this counts as a "low" score for streak purposes.
 """
 
 import json
@@ -30,6 +43,19 @@ from tools.llm_json import loads_llm_json
 from tools.job_skills import enrich_jobs_skill_lists
 
 client = AsyncAnthropic()
+
+# ── Early-exit guardrail constants ────────────────────────────────────────────
+# Halt scoring early if a streak of consecutive postings score below the
+# threshold. Prevents the agent from spending more tokens on a clearly weak
+# batch of listings. Both knobs can also be overridden per-instance via
+# ``SearchAgent(..., consecutive_low_limit=..., low_score_threshold=...)``.
+EARLY_EXIT_CONSECUTIVE_LOW = 7   # how many low-scoring jobs in a row trigger exit
+EARLY_EXIT_SCORE_THRESHOLD = 50  # a score < this counts as "low" for streak purposes
+
+# Concurrency for the scoring loop. Decoupled from the streak threshold on
+# purpose: streak detection is sequential per-batch, so a fixed batch size
+# keeps parallelism predictable regardless of how the threshold is tuned.
+SCORING_BATCH_SIZE = 5
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
@@ -120,9 +146,28 @@ Return ONLY a JSON array (empty array if none found), no markdown:
 
 
 class SearchAgent:
-    def __init__(self, resume: dict):
+    def __init__(
+        self,
+        resume: dict,
+        consecutive_low_limit: int | None = None,
+        low_score_threshold: int | None = None,
+    ):
         self.resume = resume
         self.resume_summary = self._build_resume_summary()
+        # Per-run guardrail config. Module-level constants are defaults so
+        # callers can keep relying on the global tuning unless they pass an
+        # override.
+        self.consecutive_low_limit = (
+            EARLY_EXIT_CONSECUTIVE_LOW if consecutive_low_limit is None else int(consecutive_low_limit)
+        )
+        self.low_score_threshold = (
+            EARLY_EXIT_SCORE_THRESHOLD if low_score_threshold is None else int(low_score_threshold)
+        )
+        self.claude_failures = 0
+        self.last_run_stats: dict = {}
+
+    def _record_claude_failure(self) -> None:
+        self.claude_failures += 1
 
     def _build_resume_summary(self) -> str:
         r = self.resume
@@ -149,15 +194,21 @@ class SearchAgent:
             "candidate": json.loads(self.resume_summary)
         }, indent=2)
 
-        response = await client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=2000,
-            system=DISCOVERY_SYSTEM,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        try:
+            response = await client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=2000,
+                system=DISCOVERY_SYSTEM,
+                messages=[{"role": "user", "content": prompt}]
+            )
+        except Exception as e:
+            self._record_claude_failure()
+            print(f"  ❌ Company discovery call failed: {e}")
+            return []
         try:
             companies = loads_llm_json(response.content[0].text)
         except ValueError as e:
+            self._record_claude_failure()
             print(f"  ❌ Failed to parse company discovery JSON: {e}")
             return []
         if not isinstance(companies, list):
@@ -169,17 +220,25 @@ class SearchAgent:
     async def _research_adhoc_company(self, company_name: str) -> dict:
         """Research a single named company and detect its ATS."""
         print(f"  🔎 Researching: {company_name}")
-        response = await client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=300,
-            system=ATS_DETECT_SYSTEM,
-            messages=[{"role": "user", "content": f"Company: {company_name}"}]
-        )
+        response = None
         try:
-            info = loads_llm_json(response.content[0].text)
-        except ValueError as e:
-            print(f"    ⚠️  ATS detect JSON invalid for {company_name}: {e}")
-            info = {}
+            response = await client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=300,
+                system=ATS_DETECT_SYSTEM,
+                messages=[{"role": "user", "content": f"Company: {company_name}"}]
+            )
+        except Exception as e:
+            self._record_claude_failure()
+            print(f"    ⚠️  ATS detect call failed for {company_name}: {e}")
+        info: dict = {}
+        if response is not None:
+            try:
+                info = loads_llm_json(response.content[0].text)
+            except ValueError as e:
+                self._record_claude_failure()
+                print(f"    ⚠️  ATS detect JSON invalid for {company_name}: {e}")
+                info = {}
         if not isinstance(info, dict):
             info = {}
         return {
@@ -298,15 +357,21 @@ class SearchAgent:
                 tag.decompose()
             text = soup.get_text(separator="\n", strip=True)[:5000]
 
-            response = await client.messages.create(
-                model="claude-sonnet-4-5",
-                max_tokens=800,
-                system=CUSTOM_CAREERS_SYSTEM,
-                messages=[{"role": "user", "content": f"Company: {company['name']}\n\n{text}"}]
-            )
+            try:
+                response = await client.messages.create(
+                    model="claude-sonnet-4-5",
+                    max_tokens=800,
+                    system=CUSTOM_CAREERS_SYSTEM,
+                    messages=[{"role": "user", "content": f"Company: {company['name']}\n\n{text}"}]
+                )
+            except Exception as e:
+                self._record_claude_failure()
+                print(f"    ⚠️  Custom listings Claude call failed ({company['name']}): {e}")
+                return []
             try:
                 listings = loads_llm_json(response.content[0].text)
             except ValueError as e:
+                self._record_claude_failure()
                 print(f"    ⚠️  Custom listings JSON invalid ({company['name']}): {e}")
                 return []
             if not isinstance(listings, list):
@@ -363,10 +428,17 @@ Description:
             scoring = loads_llm_json(response.content[0].text)
             if not isinstance(scoring, dict):
                 raise ValueError("scoring payload is not a JSON object")
-            return {**job, **scoring}
+            return {**job, **scoring, "scoring_failed": False}
         except Exception as e:
+            self._record_claude_failure()
             print(f"    ⚠️  Scoring failed ({title}): {e}")
-            return {**job, "score": 0, "match_reasons": [], "gap_reasons": []}
+            return {
+                **job,
+                "score": 0,
+                "match_reasons": [],
+                "gap_reasons": [],
+                "scoring_failed": True,
+            }
 
     # ── Main Entry ────────────────────────────────────────────────────────────
 
@@ -383,14 +455,30 @@ Description:
           3. Fetch open roles from each company's ATS
           4. Filter to target roles
           5. Extract required/preferred skills for gap analysis
-          6. Score each against resume
+          6. Score each against resume (with failure-aware early-exit)
           7. Return sorted results (orchestrator persists to SQLite)
         """
+        self.claude_failures = 0
+        self.last_run_stats = {
+            "companies_discovered": 0,
+            "companies_processed": 0,
+            "raw_postings": 0,
+            "postings_after_role_filter": 0,
+            "jobs_scored": 0,
+            "qualified_jobs": 0,
+            "early_exit_triggered": False,
+            "low_score_threshold": self.low_score_threshold,
+            "consecutive_low_score_limit": self.consecutive_low_limit,
+            "claude_failures": 0,
+        }
+
         # 1. Discover
         companies = await self._discover_companies(roles)
         if not companies:
             print("  ⚠️  No companies discovered — aborting search run.")
+            self.last_run_stats["claude_failures"] = self.claude_failures
             return []
+        self.last_run_stats["companies_discovered"] = len(companies)
 
         # 2. Ad-hoc merge
         if adhoc_companies:
@@ -400,13 +488,15 @@ Description:
             )
             companies.extend(adhoc)
             print(f"  📍 Total companies: {len(companies)}")
+        self.last_run_stats["companies_processed"] = len(companies)
 
         # 3. Fetch jobs
         print(f"\n  📥 Fetching from {len(companies)} companies...")
-        all_jobs = []
+        all_jobs: list[dict] = []
         for batch in await asyncio.gather(*[self._fetch_company_jobs(c) for c in companies]):
             all_jobs.extend(batch)
         print(f"  📋 Raw postings: {len(all_jobs)}")
+        self.last_run_stats["raw_postings"] = len(all_jobs)
 
         # 4. Role filter
         keywords = [r.lower() for r in roles]
@@ -415,22 +505,69 @@ Description:
             if any(kw in (j.get("title") or "").lower() for kw in keywords)
         ]
         print(f"  🎯 After role filter: {len(filtered)}")
+        self.last_run_stats["postings_after_role_filter"] = len(filtered)
         if not filtered:
+            self.last_run_stats["claude_failures"] = self.claude_failures
             return []
 
         # 5. Skill lists for downstream gap analysis
         print("  🧠 Extracting skills from posting text (LLM)...")
         filtered = await enrich_jobs_skill_lists(filtered, persist_store=None)
 
-        # 6. Score
-        print(f"  ⚡ Scoring {len(filtered)} postings...")
-        sem = asyncio.Semaphore(5)
+        # 6. Score (parallel batches, failure-aware streak halt)
+        #    Batch size is independent of the streak threshold — see SCORING_BATCH_SIZE.
+        print(
+            f"  ⚡ Scoring up to {len(filtered)} postings "
+            f"(early-exit after {self.consecutive_low_limit} consecutive "
+            f"scores < {self.low_score_threshold}, batch={SCORING_BATCH_SIZE})..."
+        )
+        scored: list[dict] = []
+        consecutive_low = 0
+        halted = False
+        for batch_start in range(0, len(filtered), SCORING_BATCH_SIZE):
+            batch = filtered[batch_start:batch_start + SCORING_BATCH_SIZE]
+            batch_scored = await asyncio.gather(*[self._score_job(j) for j in batch])
+            for job in batch_scored:
+                scored.append(job)
+                self.last_run_stats["jobs_scored"] += 1
+                try:
+                    score_val = float(job.get("score") or 0)
+                except (TypeError, ValueError):
+                    score_val = 0.0
+                scoring_failed = bool(job.get("scoring_failed"))
 
-        async def score_throttled(job):
-            async with sem:
-                return await self._score_job(job)
+                if scoring_failed:
+                    # Failures are tracked via claude_failures; do NOT advance
+                    # the low-signal streak counter — that would let API
+                    # outages masquerade as "weak postings" and stop runs
+                    # prematurely.
+                    print(
+                        "    ↳ Scoring failure encountered; excluded from low-signal streak."
+                    )
+                    continue
 
-        scored = await asyncio.gather(*[score_throttled(j) for j in filtered])
+                if score_val < self.low_score_threshold:
+                    consecutive_low += 1
+                    print(
+                        f"    ↳ Low score streak: {consecutive_low}/"
+                        f"{self.consecutive_low_limit} "
+                        f"(score={score_val:.0f}, threshold={self.low_score_threshold})"
+                    )
+                    if consecutive_low >= self.consecutive_low_limit:
+                        self.last_run_stats["early_exit_triggered"] = True
+                        remaining = len(filtered) - len(scored)
+                        print(
+                            f"  ⛔ Early exit: {consecutive_low} consecutive postings "
+                            f"scored < {self.low_score_threshold}. "
+                            f"Halting after {len(scored)} of {len(filtered)} "
+                            f"({remaining} skipped)."
+                        )
+                        halted = True
+                        break
+                else:
+                    consecutive_low = 0
+            if halted:
+                break
 
         # 7. Return qualified (persistence handled by orchestrator)
         qualified = sorted(
@@ -438,5 +575,7 @@ Description:
             key=lambda x: x.get("score", 0),
             reverse=True
         )
+        self.last_run_stats["qualified_jobs"] = len(qualified)
+        self.last_run_stats["claude_failures"] = self.claude_failures
         print(f"  ✅ Qualified (score ≥ {min_score}): {len(qualified)}")
         return qualified
