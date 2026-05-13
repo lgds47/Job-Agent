@@ -299,7 +299,9 @@ class SearchAgent:
                     "company_meta": {
                         "why_good_fit": company.get("why_good_fit"),
                         "ml_maturity": company.get("ml_maturity"),
-                        "stage": company.get("stage")
+                        "stage": company.get("stage"),
+                        "accessibility": company.get("accessibility"),
+                        "accessibility_reason": company.get("accessibility_reason")
                     }
                 }
                 for j in payload.get("jobs", [])
@@ -328,7 +330,9 @@ class SearchAgent:
                     "company_meta": {
                         "why_good_fit": company.get("why_good_fit"),
                         "ml_maturity": company.get("ml_maturity"),
-                        "stage": company.get("stage")
+                        "stage": company.get("stage"),
+                        "accessibility": company.get("accessibility"),
+                        "accessibility_reason": company.get("accessibility_reason")
                     }
                 }
                 for j in payload
@@ -357,7 +361,9 @@ class SearchAgent:
                     "company_meta": {
                         "why_good_fit": company.get("why_good_fit"),
                         "ml_maturity": company.get("ml_maturity"),
-                        "stage": company.get("stage")
+                        "stage": company.get("stage"),
+                        "accessibility": company.get("accessibility"),
+                        "accessibility_reason": company.get("accessibility_reason")
                     }
                 }
                 for j in payload.get("jobs", [])
@@ -411,7 +417,9 @@ class SearchAgent:
                     "company_meta": {
                         "why_good_fit": company.get("why_good_fit"),
                         "ml_maturity": company.get("ml_maturity"),
-                        "stage": company.get("stage")
+                        "stage": company.get("stage"),
+                        "accessibility": company.get("accessibility"),
+                        "accessibility_reason": company.get("accessibility_reason")
                     }
                 }
                 for j in listings
