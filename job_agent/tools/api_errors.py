@@ -101,7 +101,15 @@ def classify_api_error(exc: BaseException) -> dict[str, Any]:
         elif isinstance(exc, RateLimitError):
             meta["error_type"] = "rate_limit"
         elif isinstance(exc, BadRequestError):
-            if err_type == "invalid_request_error":
+            msg_lower = (exc.message or "").lower()
+            body_msg = ""
+            if isinstance(exc.body, dict):
+                err = exc.body.get("error")
+                if isinstance(err, dict):
+                    body_msg = str(err.get("message", "")).lower()
+            if err_type == "billing_error" or "credit balance" in msg_lower or "credit balance" in body_msg:
+                meta["error_type"] = "billing"
+            elif err_type == "invalid_request_error":
                 meta["error_type"] = "model_invalid_request"
             else:
                 meta["error_type"] = "model_invalid_request"
