@@ -17,10 +17,10 @@ source .venv/bin/activate
 # API key: set ANTHROPIC_API_KEY env var OR create job_agent/.env with ANTHROPIC_API_KEY=sk-...
 ```
 
-Run these three checks in order after activation:
+Run these checks in order after activation:
 
-1. `python --version` — expect `3.10+`; if lower, the venv is pointed at the wrong interpreter.
-2. `python -c "import os; print(bool(os.getenv('ANTHROPIC_API_KEY')))"` — `True`: full pipeline available; `False`: use local-only workflows (no Claude calls).
+1. `python orchestrator.py doctor` — Python version, resume schema spot-check, API key presence, optional `count_tokens` probe (use `--skip-api` for fully offline checks).
+2. `python --version` — expect `3.10+`; if lower, the venv is pointed at the wrong interpreter.
 3. `python -c "from pathlib import Path; print(Path('data/luke_ganalon_resume.json').exists())"` — must be `True` for any agent flow; if `False`, drop in the mock JSON from the Mocking section below.
 
 **Resume JSON** is required at `job_agent/data/luke_ganalon_resume.json` (gitignored, contains PII).  
@@ -64,11 +64,22 @@ python -c "from agents.project_builder_agent import ProjectBuilderAgent; print('
 
 **End-to-end test** (`apply` is the most reliable — no discovery step, no LLM-response sizing risk):
 
+Use a **live** ATS job URL. Prefer `absolute_url` from the Greenhouse JSON API (`job-boards.greenhouse.io/{board}/jobs/{id}`). Legacy `boards.greenhouse.io/.../jobs/{id}` pages often 404 or redirect to `?error=true` board chrome — `apply` will fail fast with `job_not_found` instead of wasting tokens on HTML scrape.
+
 ```bash
-python orchestrator.py apply --url "https://jobs.lever.co/anthropic/SOME-JOB-ID"
-# Writes: data/applications/YYYYMMDD_company_role/{jd.json, tailored_resume.json, cover_letter.md, meta.json}
-# Also upserts an applications row in data/job_agent.db
+# Greenhouse (canonical): copy absolute_url from boards API listing
+python orchestrator.py apply --url "https://job-boards.greenhouse.io/acme/jobs/1234567890"
+
+# Lever
+python orchestrator.py apply --url "https://jobs.lever.co/acme/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+# Ashby
+python orchestrator.py apply --url "https://jobs.ashbyhq.com/acme/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 ```
+
+Writes: `data/applications/YYYYMMDD_company_role/{jd.json, tailored_resume.json, cover_letter.md, meta.json}` and upserts an applications row in `data/job_agent.db`.
+
+Optional resume fields for discovery bias (injected into search user message, not hardcoded in Python): `agent_metadata.preferred_locations`, `agent_metadata.seniority_target`, `agent_metadata.years_experience`, `agent_metadata.positioning_notes`, `agent_metadata.differentiators[]`.
 
 ### Thresholds — keep these distinct
 
@@ -110,6 +121,8 @@ Every refine pass — including the no-brief and corrupt-brief shortcuts (which 
 | Command | API key required? | What it does |
 |---------|-------------------|--------------|
 | `python orchestrator.py --help` | no | print CLI usage |
+| `python orchestrator.py doctor` | optional | env + resume checks; API probe unless `--skip-api` |
+| `python orchestrator.py doctor --skip-api` | no | local checks only |
 | `python orchestrator.py status` | no | read-only dashboard over `job_agent.db` + `data/applications/` + `data/projects/` (default `--format text`) |
 | `python orchestrator.py status --format text -o /tmp/status.txt` | no | text dashboard written to file |
 | `python orchestrator.py status --format json` | no | structured JSON (stdout) |
@@ -143,6 +156,9 @@ Every refine pass — including the no-brief and corrupt-brief shortcuts (which 
 | `❌ Failed to parse company discovery JSON` | `_discover_companies` Claude response is malformed or was truncated (e.g. `max_tokens` reverted below 8000) | Confirm `agents/search_agent.py::_discover_companies` still uses `max_tokens=8000`; if response is short but invalid, inspect the JSON tail in stdout for the parse error pos |
 | `FileNotFoundError: data/luke_ganalon_resume.json` | Resume JSON not present | Create it from the schema above |
 | `AuthenticationError` or missing key message | `ANTHROPIC_API_KEY` not set | Add `job_agent/.env` or export the var |
+| `Apply failed [billing]` / zero credits | Account cannot call API (not a JD parser bug) | `python orchestrator.py doctor`; add credits at console.anthropic.com |
+| `Apply failed [job_not_found]` on Greenhouse | Stale slug/id or legacy board URL | Use `absolute_url` from `https://boards.greenhouse.io/v1/boards/{slug}/jobs?content=true` |
+| `jd_parse_invalid_json` in run history | Model returned bad JSON | Retry; check posting text is not board chrome |
 | `ResumeAgent bullet ranking failed` | Bullet `id` fields missing or duplicated | Fix `id` fields in resume JSON |
 | `No jobs in state store yet` on `gaps` | `search` hasn't run yet | Run `search` first or seed DB manually |
 | `⚠️ No target_roles set` on `search` | Missing `agent_metadata.target_roles` in resume JSON | Add role list to resume JSON |

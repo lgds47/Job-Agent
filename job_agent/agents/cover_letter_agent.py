@@ -14,10 +14,11 @@ Uses only the parsed JD fields and resume JSON passed into the prompt (no live w
 import json
 from anthropic import AsyncAnthropic
 
+from tools.resume_prompts import build_positioning_block
+
 client = AsyncAnthropic()
 
-COVER_LETTER_SYSTEM = """You are an expert cover letter writer for technical roles
-(ML engineering, data science, MLOps).
+COVER_LETTER_RULES = """You are an expert cover letter writer for technical roles.
 
 Write a cover letter following this four-slot structure:
 
@@ -33,10 +34,7 @@ Write a cover letter following this four-slot structure:
 
 3. WHY YOU (3-4 sentences): 2-3 concrete proof points from the candidate's
    experience that directly address the JD's requirements. Use numbers where
-   available. Lead with production and deployment experience — this candidate's
-   differentiator is applied ML in real systems (Kubernetes, Docker, PyTorch
-   in production), not research publications. Draw from consulting work where
-   the candidate owned outcomes across multiple client environments.
+   available in the resume. Lead with the strongest evidence of fit for this role.
 
 4. CTA (1-2 sentences): Confident and direct. Express genuine interest in the
    specific work, and invite a conversation. No "I hope to hear from you" or
@@ -57,6 +55,7 @@ Rules:
 class CoverLetterAgent:
     def __init__(self, resume: dict):
         self.resume = resume
+        self._system = COVER_LETTER_RULES + "\n\n" + build_positioning_block(resume)
 
     def _build_candidate_context(self) -> str:
         """Compress relevant resume info for the prompt."""
@@ -118,7 +117,7 @@ Grounding: only reference company facts that appear in JOB DESCRIPTION or CANDID
         response = await client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=700,
-            system=COVER_LETTER_SYSTEM,
+            system=self._system,
             messages=[{"role": "user", "content": prompt}]
         )
 

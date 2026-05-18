@@ -130,8 +130,27 @@ def _summarize_project_ideas(ideas: list[dict]) -> dict:
     return {"total": len(ideas), "by_status": by_status}
 
 
+def _run_metadata(run: dict) -> dict:
+    meta = run.get("metadata")
+    return meta if isinstance(meta, dict) else {}
+
+
+def _run_error_summary(run: dict) -> str:
+    meta = _run_metadata(run)
+    et = meta.get("error_type")
+    msg = meta.get("user_message") or meta.get("error")
+    if et and msg:
+        return f"{et}: {_truncate(str(msg), 48)}"
+    if et:
+        return str(et)
+    if msg:
+        return _truncate(str(msg), 56)
+    return "—"
+
+
 def _summarize_run_history(runs: list[dict]) -> dict:
     by_command: dict[str, int] = {}
+    by_error_type: dict[str, int] = {}
     totals = {
         "runs": len(runs),
         "jobs_scored": 0,
@@ -148,7 +167,10 @@ def _summarize_run_history(runs: list[dict]) -> dict:
         status = (r.get("status") or "").lower()
         if status in {"error", "failed"}:
             totals["errors"] += 1
-    return {"by_command": by_command, "totals": totals}
+            et = _run_metadata(r).get("error_type")
+            if et:
+                by_error_type[str(et)] = by_error_type.get(str(et), 0) + 1
+    return {"by_command": by_command, "by_error_type": by_error_type, "totals": totals}
 
 
 def _scan_application_dirs(applications_dir: Path, db_rows: list[dict]) -> list[dict]:
@@ -368,6 +390,11 @@ def format_text(status: dict) -> str:
             "By command (recent window): "
             + ", ".join(f"{k}={v}" for k, v in sorted(rh_summary["by_command"].items()))
         )
+    if rh_summary.get("by_error_type"):
+        lines.append(
+            "Failed runs by error_type: "
+            + ", ".join(f"{k}={v}" for k, v in sorted(rh_summary["by_error_type"].items()))
+        )
     by_cmd_all_time = status.get("run_history_totals_by_command") or []
     if by_cmd_all_time:
         lines.append("By command (all-time):")
@@ -383,7 +410,7 @@ def format_text(status: dict) -> str:
         lines.append(_format_table(rows))
     runs = status["run_history"]
     if runs:
-        rows = [["ID", "Cmd", "Started", "Finished", "Status", "Scored", "Early", "Fails"]]
+        rows = [["ID", "Cmd", "Started", "Finished", "Status", "Scored", "Early", "Fails", "Error"]]
         for r in runs:
             rows.append([
                 str(r.get("id", "")),
@@ -394,6 +421,7 @@ def format_text(status: dict) -> str:
                 str(r.get("jobs_scored") or 0),
                 "Y" if int(r.get("early_exit_triggered") or 0) else "N",
                 str(r.get("claude_failures") or 0),
+                _run_error_summary(r),
             ])
         lines.append(_format_table(rows))
     else:
@@ -525,15 +553,23 @@ def format_html(status: dict) -> str:
     parts.append("<h2>Run History</h2>")
     rhs = status["run_history_summary"]
     t = rhs["totals"]
+    err_types = rhs.get("by_error_type") or {}
+    err_line = ""
+    if err_types:
+        err_line = (
+            " Failed by error_type: "
+            + ", ".join(f"{html.escape(k)}={v}" for k, v in sorted(err_types.items()))
+            + "."
+        )
     parts.append(
         f'<p>Runs: <b>{t["runs"]}</b>. '
         f'Jobs scored: <b>{t["jobs_scored"]}</b>. '
         f'Early exits: <b>{t["early_exits"]}</b>. '
         f'Claude failures: <b>{t["claude_failures"]}</b>. '
-        f'Errors: <b>{t["errors"]}</b>.</p>'
+        f'Errors: <b>{t["errors"]}</b>.{err_line}</p>'
     )
     parts.append(_html_table(
-        ["ID", "Command", "Started", "Finished", "Status", "Scored", "Early", "Fails"],
+        ["ID", "Command", "Started", "Finished", "Status", "Scored", "Early", "Fails", "Error"],
         [
             [
                 str(r.get("id", "")),
@@ -544,6 +580,7 @@ def format_html(status: dict) -> str:
                 str(r.get("jobs_scored") or 0),
                 "Y" if int(r.get("early_exit_triggered") or 0) else "N",
                 str(r.get("claude_failures") or 0),
+                html.escape(_run_error_summary(r)),
             ]
             for r in status["run_history"]
         ],
