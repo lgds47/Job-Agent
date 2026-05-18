@@ -4,7 +4,7 @@
 
 ### Overview
 
-Python CLI application — a multi-agent job search pipeline built on the Anthropic Claude API. No web server, no Docker, no frontend. Entry point is `job_agent/orchestrator.py` with subcommands: `search`, `apply`, `gaps`, `status`.
+Python CLI application — a multi-agent job search pipeline built on the Anthropic Claude API. No web server, no Docker, no frontend. Entry point is `job_agent/orchestrator.py` with subcommands: `search`, `apply`, `gaps`, `status`, `doctor`.
 
 ### Running the app
 
@@ -21,7 +21,15 @@ python orchestrator.py status                                    # read-only das
 python orchestrator.py status --format json                      # machine-readable export
 python orchestrator.py status --format html -o /tmp/status.html  # standalone HTML export
 python orchestrator.py status --format text -o /tmp/status.txt   # text export to file
+python orchestrator.py doctor                                  # env + resume + API probe
+python orchestrator.py doctor --skip-api                       # offline checks only
 ```
+
+### Apply URLs (ATS)
+
+`apply` resolves Greenhouse, Lever, and Ashby job URLs via public ATS APIs (same sources as `SearchAgent`) before falling back to HTML scrape. Prefer live `absolute_url` values such as `https://job-boards.greenhouse.io/{board}/jobs/{id}`. Legacy `boards.greenhouse.io/.../jobs/{id}` links may 404 or show `?error=true` — failures surface as `job_not_found`, not `jd_parse_failed`.
+
+Failed runs persist structured metadata: `error_type`, `user_message`, optional `http_status` / `request_id`. `claude_failures` increments only for invalid model JSON, not billing/auth/rate-limit errors.
 
 ### Thresholds (single source of truth)
 
@@ -103,6 +111,7 @@ A structured resume file at `job_agent/data/luke_ganalon_resume.json` is require
 - `tools/text_sanitize.py` — code fence stripping
 - `orchestrator.py --help` — CLI entry point
 - `orchestrator.py status` — fully offline dashboard over the SQLite store and on-disk artifacts
+- `orchestrator.py doctor` — offline env/resume checks; optional API probe via `count_tokens`
 - `orchestrator.py gaps` — runs locally if jobs exist in DB but no skills need LLM backfill
 
 ### No linter or test framework configured

@@ -11,6 +11,8 @@ import httpx
 from bs4 import BeautifulSoup
 from anthropic import AsyncAnthropic
 
+from tools.api_errors import JobNotFoundError
+from tools.ats_resolve import fetch_ats_job
 from tools.llm_json import loads_llm_json
 
 client = AsyncAnthropic()
@@ -77,33 +79,36 @@ Posting text:
     }
 
 
-async def parse_jd(url: str) -> dict:
-    """Fetch a job posting URL and return structured JD data."""
-
-    # Fetch the page
+async def _fetch_html_text(url: str) -> str:
     async with httpx.AsyncClient(follow_redirects=True, timeout=15) as http:
         resp = await http.get(url, headers={"User-Agent": "Mozilla/5.0"})
         resp.raise_for_status()
 
-    # Strip to text
     soup = BeautifulSoup(resp.text, "html.parser")
-
-    # Remove noise
     for tag in soup(["script", "style", "nav", "footer", "header"]):
         tag.decompose()
 
-    raw_text = soup.get_text(separator="\n", strip=True)
+    return soup.get_text(separator="\n", strip=True)[:6000]
 
-    # Trim to ~6000 chars to stay within token budget
-    raw_text = raw_text[:6000]
 
-    # Ask Claude to extract structure
+async def _extract_jd_from_text(raw_text: str, *, source_url: str, hints: dict | None = None) -> dict:
+    header = ""
+    if hints:
+        header = (
+            f"Known title: {hints.get('title') or 'unknown'}\n"
+            f"Known company: {hints.get('company') or 'unknown'}\n"
+            f"Known location: {hints.get('location') or 'unknown'}\n\n"
+        )
+
     response = await client.messages.create(
         model="claude-sonnet-4-5",
         max_tokens=1000,
         system=SYSTEM_PROMPT,
         messages=[
-            {"role": "user", "content": f"Parse this job posting:\n\n{raw_text}"}
+            {
+                "role": "user",
+                "content": f"Parse this job posting:\n\n{header}{raw_text}",
+            }
         ],
     )
 
@@ -113,15 +118,52 @@ async def parse_jd(url: str) -> dict:
     if not isinstance(jd, dict):
         raise ValueError("parse_jd: expected JSON object from model")
 
-    # Always preserve the source URL
-    jd["source_url"] = url
+    jd["source_url"] = source_url
+    if hints:
+        if hints.get("canonical_url"):
+            jd["canonical_url"] = hints["canonical_url"]
+        if hints.get("ats"):
+            jd["ats_source"] = hints["ats"]
     return jd
 
 
+async def parse_jd(url: str) -> dict:
+    """Fetch a job posting URL and return structured JD data."""
+
+    ats = await fetch_ats_job(url)
+    if ats is not None:
+        body = ats.description
+        if not body.strip():
+            body = f"{ats.title}\n{ats.company}\n{ats.location}"
+        hints = {
+            "title": ats.title,
+            "company": ats.company,
+            "location": ats.location,
+            "canonical_url": ats.canonical_url,
+            "ats": ats.ats,
+        }
+        return await _extract_jd_from_text(body, source_url=url, hints=hints)
+
+    # Generic HTML scrape (custom sites, legacy board pages)
+    try:
+        raw_text = await _fetch_html_text(url)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise JobNotFoundError(f"Job page not found (HTTP 404): {url}") from e
+        raise
+
+    if "?error=true" in url.lower() or "error=true" in raw_text[:500].lower():
+        raise JobNotFoundError(
+            "Job board returned an error page — use a live absolute_url from the "
+            "ATS JSON API (e.g. job-boards.greenhouse.io/.../jobs/{id})"
+        )
+
+    return await _extract_jd_from_text(raw_text, source_url=url)
+
+
 if __name__ == "__main__":
-    import asyncio
     import sys
 
-    url = sys.argv[1] if len(sys.argv) > 1 else "https://example.com/job"
-    result = asyncio.run(parse_jd(url))
+    job_url = sys.argv[1] if len(sys.argv) > 1 else "https://example.com/job"
+    result = asyncio.run(parse_jd(job_url))
     print(json.dumps(result, indent=2))

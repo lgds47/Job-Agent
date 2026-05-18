@@ -39,7 +39,9 @@ from datetime import datetime
 import httpx
 from anthropic import AsyncAnthropic
 
+from tools.api_errors import counts_as_claude_failure
 from tools.llm_json import loads_llm_json
+from tools.resume_prompts import build_discovery_context
 from tools.job_skills import enrich_jobs_skill_lists
 
 client = AsyncAnthropic()
@@ -59,33 +61,26 @@ SCORING_BATCH_SIZE = 5
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
-DISCOVERY_SYSTEM = """You are a technical recruiter and ML industry analyst.
+DISCOVERY_SYSTEM = """You are a technical recruiter and industry analyst.
 
-Given a candidate profile and target roles, identify 15-20 companies that are:
+Given a candidate profile, target roles, and optional constraints in the user
+message (locations, seniority, years of experience), identify 15-20 companies that are:
 
 1. Actively hiring for those roles RIGHT NOW (not hypothetically)
 
-2. Genuinely accessible to an early-career ML engineer (1-2 years experience):
-   - Real ML infrastructure, not just ML as a peripheral feature
-   - Engineering-driven culture with documented mentorship or structured onboarding
-   - Multiple seniority levels visible in current job postings (signals real growth path,
-     not just a one-time junior hire)
-   - Well-funded or profitable (Series B+ or public, not pre-revenue)
-   - Interview process that weights demonstrated project work and portfolio,
-     not exclusively competitive leetcode or research publications
+2. Genuinely accessible for the candidate's seniority and background:
+   - Real investment in the target discipline (not only as a peripheral feature)
+   - Engineering-driven culture with mentorship or structured onboarding when relevant
+   - Multiple seniority levels visible in current job postings when possible
+   - Well-funded or profitable (Series B+ or public, not pre-revenue) when startup-stage
+   - Interview process that weights demonstrated project work and portfolio when known
 
-3. Realistically competitive for this candidate — avoid:
-   - Companies where the effective bar is 3+ years despite "junior" titles
-     (e.g. Anthropic, OpenAI, Ramp, Stripe at the ML level)
-   - Companies that primarily hire from a small set of target universities
-     or require PhD-level ML research backgrounds
-   - Roles where the candidate would be the ONLY ML engineer (no mentorship structure)
+3. Realistically competitive for this candidate — avoid companies or roles where the
+   effective bar clearly exceeds the candidate's stated experience unless the user
+   message asks for stretch targets
 
-4. Diverse across size and stage (startups to large tech), with a bias toward:
-   - Series B through public companies with established ML teams (5-30 ML engineers)
-   - Companies in applied ML, MLOps tooling, or AI-enabled SaaS
-     (not pure research labs)
-   - SoCal-based or strong remote culture (candidate is in Costa Mesa, CA)
+4. Diverse across size and stage (startups to large tech), respecting any location
+   or remote preferences in the user message
 
 5. Resume-competitive name recognition — the company should strengthen a resume
    without requiring an unrealistic bar to enter
@@ -100,11 +95,11 @@ Return ONLY a JSON array, no markdown fences:
     "ats": "greenhouse | lever | ashby | workday | custom",
     "slug": "their-ats-slug-if-known-else-null",
     "career_url": "https://company.com/careers",
-    "why_good_fit": "one sentence — specific reason this is accessible AND valuable for an early-career ML engineer with a production background",
+    "why_good_fit": "one sentence — specific reason this is accessible AND valuable for this candidate",
     "ml_maturity": "core | growing | adjacent",
     "stage": "startup | growth | public | large-tech",
     "accessibility": "high | medium | low",
-    "accessibility_reason": "one sentence explaining why this company is or isn't realistically competitive at 1-2 yrs exp"
+    "accessibility_reason": "one sentence explaining why this company is or isn't realistically competitive for this candidate"
   }
 ]
 
@@ -214,10 +209,11 @@ class SearchAgent:
         """Ask Claude to research and recommend companies currently hiring."""
         print("  🌐 Discovering companies via Claude research...")
         today = datetime.now().strftime("%Y-%m-%d")
+        discovery_ctx = build_discovery_context(self.resume, roles)
         prompt = json.dumps({
             "today": today,
-            "target_roles": roles,
-            "candidate": json.loads(self.resume_summary)
+            "discovery_constraints": discovery_ctx,
+            "candidate": json.loads(self.resume_summary),
         }, indent=2)
 
         try:
@@ -228,7 +224,8 @@ class SearchAgent:
                 messages=[{"role": "user", "content": prompt}]
             )
         except Exception as e:
-            self._record_claude_failure()
+            if counts_as_claude_failure(e):
+                self._record_claude_failure()
             print(f"  ❌ Company discovery call failed: {e}")
             return []
         try:
@@ -255,7 +252,8 @@ class SearchAgent:
                 messages=[{"role": "user", "content": f"Company: {company_name}"}]
             )
         except Exception as e:
-            self._record_claude_failure()
+            if counts_as_claude_failure(e):
+                self._record_claude_failure()
             print(f"    ⚠️  ATS detect call failed for {company_name}: {e}")
         info: dict = {}
         if response is not None:
@@ -397,7 +395,8 @@ class SearchAgent:
                     messages=[{"role": "user", "content": f"Company: {company['name']}\n\n{text}"}]
                 )
             except Exception as e:
-                self._record_claude_failure()
+                if counts_as_claude_failure(e):
+                    self._record_claude_failure()
                 print(f"    ⚠️  Custom listings Claude call failed ({company['name']}): {e}")
                 return []
             try:
@@ -464,7 +463,8 @@ Description:
                 raise ValueError("scoring payload is not a JSON object")
             return {**job, **scoring, "scoring_failed": False}
         except Exception as e:
-            self._record_claude_failure()
+            if counts_as_claude_failure(e):
+                self._record_claude_failure()
             print(f"    ⚠️  Scoring failed ({title}): {e}")
             return {
                 **job,

@@ -38,6 +38,7 @@ Usage:
 import json
 from anthropic import AsyncAnthropic
 
+from tools.api_errors import counts_as_claude_failure
 from tools.llm_json import loads_llm_json
 from tools.state_store import StateStore
 
@@ -243,7 +244,8 @@ Skill gaps from job postings:
                 messages=[{"role": "user", "content": prompt}]
             )
         except Exception as e:
-            self._record_claude_failure()
+            if counts_as_claude_failure(e):
+                self._record_claude_failure()
             raise RuntimeError(f"ProjectPlannerAgent analyze call failed: {e}") from e
 
         try:
@@ -308,7 +310,8 @@ Candidate's existing stack: {json.dumps(self.candidate_skills)}
                 messages=[{"role": "user", "content": prompt}]
             )
         except Exception as e:
-            self._record_claude_failure()
+            if counts_as_claude_failure(e):
+                self._record_claude_failure()
             raise RuntimeError(f"ProjectPlannerAgent generate_options call failed: {e}") from e
         try:
             options = loads_llm_json(response.content[0].text)
@@ -379,7 +382,8 @@ Candidate's existing skills (use as building blocks):
                 messages=[{"role": "user", "content": prompt}]
             )
         except Exception as e:
-            self._record_claude_failure()
+            if counts_as_claude_failure(e):
+                self._record_claude_failure()
             raise RuntimeError(f"ProjectPlannerAgent build_brief call failed: {e}") from e
         try:
             brief = loads_llm_json(response.content[0].text)

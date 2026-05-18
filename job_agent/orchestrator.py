@@ -38,6 +38,7 @@ Usage:
 
   # View pipeline outputs and performance summary
   python orchestrator.py status [--format text|json|html] [--output PATH]
+  python orchestrator.py doctor [--skip-api]
 """
 
 try:
@@ -62,6 +63,8 @@ from tools.jd_parser import parse_jd
 from tools.job_skills import enrich_jobs_skill_lists
 from tools.state_store import StateStore
 from tools import status_report
+from tools.api_errors import claude_failure_count, failure_metadata
+from tools.doctor import run_doctor
 
 RESUME_PATH = Path("data/luke_ganalon_resume.json")
 APPLICATIONS_DIR = Path("data/applications")
@@ -114,6 +117,12 @@ def _most_recent_incomplete_project(projects_dir: Path) -> Path | None:
 # ─────────────────────────────────────────────────────────────────────────────
 # Status command
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def run_doctor_cmd(args):
+    """Offline-friendly environment checks (optional API probe)."""
+    check_api = not getattr(args, "skip_api", False)
+    raise SystemExit(run_doctor(resume_path=RESUME_PATH, check_api=check_api))
 
 
 def run_status(args):
@@ -178,8 +187,8 @@ async def run_search(args):
             status="failed",
             jobs_scored=int(stats.get("jobs_scored") or 0),
             early_exit_triggered=bool(stats.get("early_exit_triggered")),
-            claude_failures=int(agent.claude_failures or 0),
-            metadata={"error": str(e)},
+            claude_failures=int(agent.claude_failures or 0) + claude_failure_count(e),
+            metadata=failure_metadata(e, phase="search"),
             started_at=started_at,
             finished_at=_now_iso(),
         )
@@ -245,15 +254,17 @@ async def run_apply(args):
     try:
         jd = await parse_jd(args.url)
     except Exception as e:
+        meta = failure_metadata(e, phase="parse_jd", url=args.url)
         store.record_run(
             command="apply",
             status="failed",
-            claude_failures=1,
-            metadata={"error": f"jd_parse_failed: {e}", "url": args.url},
+            claude_failures=claude_failure_count(e),
+            metadata=meta,
             started_at=started_at,
             finished_at=_now_iso(),
         )
-        print(f"❌ Failed to parse JD: {e}")
+        err_type = meta.get("error_type", "unknown")
+        print(f"❌ Apply failed [{err_type}]: {meta.get('user_message', e)}")
         return
     print(f"   Role: {jd['title']} @ {jd['company']}")
 
@@ -268,15 +279,17 @@ async def run_apply(args):
             cover_agent.run(jd=jd)
         )
     except Exception as e:
+        meta = failure_metadata(e, phase="resume_or_cover", url=args.url)
         store.record_run(
             command="apply",
             status="failed",
-            claude_failures=1,
-            metadata={"error": f"resume_or_cover_generation_failed: {e}", "url": args.url},
+            claude_failures=claude_failure_count(e),
+            metadata=meta,
             started_at=started_at,
             finished_at=_now_iso(),
         )
-        print(f"❌ Application generation failed: {e}")
+        err_type = meta.get("error_type", "unknown")
+        print(f"❌ Application generation failed [{err_type}]: {meta.get('user_message', e)}")
         return
 
     # Step 3: Save outputs to applications directory
@@ -409,8 +422,8 @@ async def run_gaps(args):
         store.record_run(
             command="gaps",
             status="failed",
-            claude_failures=max(1, planner.claude_failures),
-            metadata={"error": str(e), "phase": "analyze"},
+            claude_failures=planner.claude_failures + claude_failure_count(e),
+            metadata=failure_metadata(e, phase="analyze"),
             started_at=started_at,
             finished_at=_now_iso(),
         )
@@ -461,8 +474,8 @@ async def run_gaps(args):
         store.record_run(
             command="gaps",
             status="failed",
-            claude_failures=max(1, planner.claude_failures),
-            metadata={"error": str(e), "phase": "generate_options"},
+            claude_failures=planner.claude_failures + claude_failure_count(e),
+            metadata=failure_metadata(e, phase="generate_options"),
             started_at=started_at,
             finished_at=_now_iso(),
         )
@@ -526,8 +539,8 @@ async def run_gaps(args):
             store.record_run(
                 command="gaps",
                 status="failed",
-                claude_failures=max(1, planner.claude_failures),
-                metadata={"error": str(e), "phase": "build_brief"},
+                claude_failures=planner.claude_failures + claude_failure_count(e),
+                metadata=failure_metadata(e, phase="build_brief"),
                 started_at=started_at,
                 finished_at=_now_iso(),
             )
@@ -630,6 +643,16 @@ def main():
         help="Write the report to a file instead of stdout."
     )
 
+    doctor_p = subparsers.add_parser(
+        "doctor",
+        help="Check Python, resume schema, API key, and optional API connectivity.",
+    )
+    doctor_p.add_argument(
+        "--skip-api",
+        action="store_true",
+        help="Do not call Anthropic (only local checks).",
+    )
+
     args = parser.parse_args()
 
     if args.command == "search":
@@ -640,6 +663,8 @@ def main():
         asyncio.run(run_gaps(args))
     elif args.command == "status":
         run_status(args)
+    elif args.command == "doctor":
+        run_doctor_cmd(args)
     else:
         parser.print_help()
 

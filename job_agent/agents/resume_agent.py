@@ -17,6 +17,7 @@ import copy
 from anthropic import AsyncAnthropic
 
 from tools.llm_json import loads_llm_json
+from tools.resume_prompts import build_positioning_block
 from tools.text_sanitize import strip_code_fences
 
 client = AsyncAnthropic()
@@ -46,7 +47,7 @@ Keep reason to one concise phrase explaining the match or mismatch.
 Include ALL bullet ids. Return only JSON, no markdown.
 """
 
-SUMMARY_REWRITE_SYSTEM = """You are a resume writer tailoring a summary for a
+SUMMARY_REWRITE_RULES = """You are a resume writer tailoring a summary for a
 specific job description.
 
 Rules:
@@ -55,11 +56,6 @@ Rules:
 - Preserve all factual claims exactly — do not upgrade titles, inflate team
   sizes, or imply experience not present in the original
 - Do not fabricate metrics, tools, or responsibilities
-- Maintain the candidate's core positioning: production ML engineering
-  background gained through applied consulting work, not pure research
-- The candidate's differentiators are hands-on deployment experience
-  (Kubernetes, Docker, PyTorch in production), applied ML across multiple
-  domains, and a direct path from data analytics into ML engineering
 - Return only the summary text, no quotes, no labels
 """
 
@@ -67,6 +63,9 @@ Rules:
 class ResumeAgent:
     def __init__(self, resume: dict):
         self.resume = resume
+        self._summary_system = (
+            SUMMARY_REWRITE_RULES + "\n\n" + build_positioning_block(resume)
+        )
 
     def _all_bullets(self) -> list[dict]:
         bullets = []
@@ -128,7 +127,7 @@ Keywords: {', '.join(jd.get('keywords', []))}
         response = await client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=300,
-            system=SUMMARY_REWRITE_SYSTEM,
+            system=self._summary_system,
             messages=[{"role": "user", "content": f"Original summary:\n{original}\n\nTarget JD:\n{jd_text}"}]
         )
         return strip_code_fences(response.content[0].text)
